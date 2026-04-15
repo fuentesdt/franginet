@@ -92,7 +92,7 @@ fprintf('\n=== Visualising predictions ===\n');
 
 [vol_t, mask_t] = syntheticVesselVolume(VOL_SIZE);
 X_t    = reshape(im2single(vol_t), [VOL_SIZE 1 1]);
-prob_t = double(squeeze(extractdata(predict(trainedNet, X_t))));
+prob_t = double(squeeze(predict(trainedNet, X_t)));
 pred_t = prob_t >= 0.5;
 
 figure('Name','Prediction MIPs','Color','w');

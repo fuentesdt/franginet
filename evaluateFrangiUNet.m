@@ -54,7 +54,7 @@ function results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
         % ── Forward pass ─────────────────────────────────────────────────
         X    = reshape(vol_rs, [opts.imgSize 1 1]);   % [H W D 1 1]
         prob = predict(net, X);                        % [H W D 1 1]
-        prob = double(squeeze(extractdata(prob)));      % [H W D]
+        prob = double(squeeze(prob));      % [H W D]
 
         % ── Binary prediction ─────────────────────────────────────────────
         pred = prob >= opts.threshold;
