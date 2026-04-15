@@ -1,26 +1,27 @@
 function [trainedNet, info] = trainFrangiUNet(imgDir, labelDir, opts)
-% TRAINFRANGUINET  Train the hybrid learnable-Frangi + U-Net segmentation model.
+% TRAINFRANGUINET  Train the hybrid learnable-Frangi + U-Net on 3-D volumes.
 %
 %   [net, info] = trainFrangiUNet(imgDir, labelDir)
 %   [net, info] = trainFrangiUNet(imgDir, labelDir, opts)
 %
-%   imgDir   – folder of 2-D grayscale images  (.png / .tif)
-%   labelDir – folder of matching binary vessel masks
+%   imgDir   – folder of 3-D volume .mat files  (each contains a single
+%              variable: a [H W D] single-precision array)
+%   labelDir – folder of matching binary mask .mat files (same convention)
 %   opts     – struct of training hyperparameters (see defaultOpts below)
 %
 %   The network graph is:
 %
-%     Input
-%       └─> LearnableFrangiLayer  (differentiable multi-scale vesselness)
-%       └─> [concat with raw input]
-%             └─> U-Net encoder-decoder with skip connections
+%     Input [H×W×D×1]
+%       └─> LearnableFrangiLayer  (differentiable 3-D multi-scale vesselness)
+%       └─> [concat with raw input]  →  [H×W×D×2]
+%             └─> 3-D U-Net encoder-decoder with skip connections
 %                   └─> Sigmoid output
 %
 %   References:
 %     Frangi et al. (1998) MICCAI – original vesselness filter
 %     Ronneberger et al. (2015) MICCAI – U-Net
 %
-%   Requires: Deep Learning Toolbox, Image Processing Toolbox
+%   Requires: Deep Learning Toolbox, Image Processing Toolbox (for imresize3)
 
     if nargin < 3, opts = struct(); end
     opts = defaultOpts(opts);
@@ -30,7 +31,7 @@ function [trainedNet, info] = trainFrangiUNet(imgDir, labelDir, opts)
     ds = buildDatastore(imgDir, labelDir, opts);
 
     %% ── 2. Network ──────────────────────────────────────────────────────
-    fprintf('[2/4] Assembling hybrid Frangi–UNet graph...\n');
+    fprintf('[2/4] Assembling hybrid 3-D Frangi–UNet graph...\n');
     lgraph = buildFrangiUNet(opts);
 
     %% ── 3. Training options ─────────────────────────────────────────────
@@ -61,15 +62,15 @@ end
 % =========================================================================
 function opts = defaultOpts(opts)
     defaults = struct( ...
-        'imgSize',      [256 256], ...   % spatial size (H x W)
+        'imgSize',      [64 64 32], ...  % spatial size [H W D]
         'numScales',    4, ...           % Frangi scale levels
-        'sigmaMin',     1.0, ...         % minimum Gaussian sigma (px)
-        'sigmaMax',     4.0, ...         % maximum Gaussian sigma (px)
-        'encoderDepth', 4, ...           % U-Net encoder depth
-        'initFilters',  32, ...          % filters in first encoder block
+        'sigmaMin',     1.0, ...         % minimum Gaussian sigma (voxels)
+        'sigmaMax',     4.0, ...         % maximum Gaussian sigma (voxels)
+        'encoderDepth', 3, ...           % U-Net encoder depth (reduce for small volumes)
+        'initFilters',  16, ...          % filters in first encoder block
         'lr',           1e-3, ...
         'epochs',       50, ...
-        'batchSize',    8, ...
+        'batchSize',    2, ...           % small batches for 3-D memory budget
         'l2',           1e-4, ...
         'valFraction',  0.15, ...
         'plots',        'training-progress' ...
@@ -83,15 +84,21 @@ end
 
 % =========================================================================
 function ds = buildDatastore(imgDir, labelDir, opts)
-    imgFiles   = imageDatastore(imgDir,   'FileExtensions', {'.png','.tif','.tiff','.jpg'});
-    labelFiles = imageDatastore(labelDir, 'FileExtensions', {'.png','.tif','.tiff','.jpg'});
+% Each .mat file must contain exactly one variable: the volume array.
 
-    n      = numel(imgFiles.Files);
+    imgDs   = fileDatastore(imgDir,   'ReadFcn', @loadVolume, ...
+                            'FileExtensions', '.mat');
+    labelDs = fileDatastore(labelDir, 'ReadFcn', @loadVolume, ...
+                            'FileExtensions', '.mat');
+
+    n      = numel(imgDs.Files);
     nVal   = max(1, round(n * opts.valFraction));
     nTrain = n - nVal;
 
-    % Combine into pixel-label compatible combined datastore
-    cds = combine(imgFiles, labelFiles);
+    assert(n == numel(labelDs.Files), ...
+        'Image/label .mat file count mismatch (%d vs %d).', n, numel(labelDs.Files));
+
+    cds = combine(imgDs, labelDs);
     cds = transform(cds, @(x) preprocessPair(x, opts));
 
     ds.train = subset(cds, 1:nTrain);
@@ -99,13 +106,27 @@ function ds = buildDatastore(imgDir, labelDir, opts)
 end
 
 % =========================================================================
+function vol = loadVolume(filename)
+% Load the first variable from a .mat file and return it as single.
+    data   = load(filename);
+    fields = fieldnames(data);
+    vol    = single(data.(fields{1}));
+end
+
+% =========================================================================
 function out = preprocessPair(data, opts)
-    img   = im2single(imresize(data{1}, opts.imgSize));
-    label = imresize(data{2}, opts.imgSize, 'nearest');
+% Resize volume and mask to opts.imgSize, add channel dim.
 
-    if size(img,3) > 1,   img   = rgb2gray(img);   end
-    if size(label,3) > 1, label = rgb2gray(label);  end
+    vol  = im2single(imresize3(data{1}, opts.imgSize));
+    mask = imresize3(data{2}, opts.imgSize, 'Method', 'nearest');
 
-    label = single(label > 0.5);          % binary mask -> single [0,1]
-    out   = {img, label};
+    % Ensure single-channel: collapse any extra dims
+    vol  = vol(:,:,:,1);
+    mask = mask(:,:,:,1);
+
+    % Add channel dimension: [H W D] -> [H W D 1]
+    vol  = reshape(vol,           [opts.imgSize 1]);
+    mask = reshape(single(mask > 0.5), [opts.imgSize 1]);
+
+    out = {vol, mask};
 end

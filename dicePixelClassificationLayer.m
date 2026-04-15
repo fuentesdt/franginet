@@ -5,11 +5,15 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
 %
 %   Dice loss is preferred for vessel segmentation because it is
 %   intrinsically robust to class imbalance (foreground vessels are a
-%   small fraction of image pixels).
+%   small fraction of image voxels).
+%
+%   Works for any spatial dimensionality (2-D or 3-D): batch is always
+%   the last dimension of Y and T.
 %
 %   INPUTS
-%     Y  – network output, sigmoid-activated, shape [H W 1 B], values ∈ (0,1)
-%     T  – ground-truth binary mask,           shape [H W 1 B], values ∈ {0,1}
+%     Y  – network output, sigmoid-activated, values ∈ (0,1)
+%          2-D: [H W 1 B]   3-D: [H W D 1 B]
+%     T  – ground-truth binary mask, values ∈ {0,1}, same shape as Y
 %
 %   PARAMETERS (set via constructor or properties)
 %     lambdaDice  – weight for Dice term  (default 0.7)
@@ -40,14 +44,14 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
         % -----------------------------------------------------------------
         function loss = forwardLoss(layer, Y, T)
         % FORWARDLOSS  Compute combined Dice + BCE loss.
-        %   Y, T : [H W 1 B]
+        %   Batch is the last dimension regardless of spatial rank.
 
             eps = layer.smooth;
+            B   = size(Y, ndims(Y));   % last dim is always batch
 
             % ── Dice loss ─────────────────────────────────────────────────
-            % Flatten spatial dims per batch element
-            Y_flat = reshape(Y, [], size(Y,4));   % [H*W, B]
-            T_flat = reshape(T, [], size(T,4));
+            Y_flat = reshape(Y, [], B);   % [N, B]
+            T_flat = reshape(T, [], B);
 
             intersection = sum(Y_flat .* T_flat, 1);
             union        = sum(Y_flat, 1) + sum(T_flat, 1);
@@ -55,7 +59,7 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
             L_dice       = mean(1 - dice_score);
 
             % ── Binary cross-entropy loss ─────────────────────────────────
-            Y_clip = max(min(Y, 1-1e-7), 1e-7);   % numerical stability
+            Y_clip = max(min(Y, 1-1e-7), 1e-7);
             L_bce  = -mean(T .* log(Y_clip) + (1-T) .* log(1-Y_clip), 'all');
 
             % ── Combined ─────────────────────────────────────────────────
@@ -64,13 +68,12 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
 
         % -----------------------------------------------------------------
         function dX = backwardLoss(layer, Y, T, dLdY_upstream)
-        % BACKWARDLOSS  Analytical gradients (optional; auto-diff fallback
-        %               is used when this method is absent, but explicit
-        %               gradients are faster and more stable).
+        % BACKWARDLOSS  Analytical gradients (faster and more stable than
+        %               auto-diff fallback).
 
-            eps  = layer.smooth;
-            B    = size(Y, 4);
-            N    = numel(Y) / B;    % pixels per image
+            eps = layer.smooth;
+            B   = size(Y, ndims(Y));
+            N   = numel(Y) / B;    % voxels per volume
 
             Y_flat = reshape(Y, N, B);
             T_flat = reshape(T, N, B);
@@ -86,9 +89,9 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
                 ./ (N * denom), size(Y));
 
             % ── BCE gradient ──────────────────────────────────────────────
-            Y_clip      = max(min(Y, 1-1e-7), 1e-7);
-            nPix        = numel(Y);
-            dBCE_dY     = (- T ./ Y_clip + (1-T) ./ (1-Y_clip)) / nPix;
+            Y_clip  = max(min(Y, 1-1e-7), 1e-7);
+            nVox    = numel(Y);
+            dBCE_dY = (- T ./ Y_clip + (1-T) ./ (1-Y_clip)) / nVox;
 
             % ── Combined ─────────────────────────────────────────────────
             dX = layer.lambdaDice * dDice_dY + layer.lambdaBCE * dBCE_dY;
