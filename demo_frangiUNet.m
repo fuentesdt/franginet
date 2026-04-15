@@ -25,8 +25,9 @@ nTrain = 20;
 nVal   = 5;
 nTotal = nTrain + nVal;
 
-imgDir   = fullfile(tempdir, 'frangi_demo3d', 'images');
-labelDir = fullfile(tempdir, 'frangi_demo3d', 'labels');
+rootdir = '.'
+imgDir   = fullfile(rootdir, 'frangi_demo3d', 'images');
+labelDir = fullfile(rootdir, 'frangi_demo3d', 'labels');
 mkdir(imgDir); mkdir(labelDir);
 
 for i = 1:nTotal
@@ -58,7 +59,7 @@ base_opts = struct( ...
     'encoderDepth', 2, ...    % shallow for demo speed
     'initFilters',  8, ...    % small for demo speed
     'lr',           5e-4, ...
-    'epochs',       10, ...   % increase to 50+ for real training
+    'epochs',       50, ...   % increase to 50+ for real training
     'batchSize',    2, ...
     'l2',           1e-4, ...
     'valFraction',  0.2, ...
@@ -101,10 +102,10 @@ fprintf('\n=== Evaluating both models ===\n');
 evalOpts.imgSize   = VOL_SIZE;
 evalOpts.threshold = 0.5;
 
-evalOpts.outDir = fullfile(tempdir, 'frangi_demo3d', 'preds_hybrid');
+evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', 'preds_hybrid');
 results_hybrid  = evaluateFrangiUNet(net_hybrid, imgDir, labelDir, evalOpts);
 
-evalOpts.outDir = fullfile(tempdir, 'frangi_demo3d', 'preds_plain');
+evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', 'preds_plain');
 results_plain   = evaluateFrangiUNet(net_plain,  imgDir, labelDir, evalOpts);
 
 %% ── 7. Accuracy comparison table ────────────────────────────────────────
@@ -178,7 +179,7 @@ function [vol, mask] = syntheticVesselVolume(sz)
 
     nVessels = randi([2 5]);
     for v = 1:nVessels
-        radius = randi([1 3]);
+        radius = randi([1 2]);
 
         % Random quadratic Bezier control points in 3-D
         x0 = randi(H); y0 = randi(W); z0 = randi(D);

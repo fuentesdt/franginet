@@ -59,7 +59,8 @@ function lgraph = buildFrangiUNet(opts)
     skipNames = cell(1, Dp);
 
     for d = 1:Dp
-        outCh   = nF * 2^(d-1);
+        %outCh   = nF * 2^(d-1);
+        outCh   = nF ; % pocketnet
         blkName = sprintf('enc%d', d);
         [layers, connect, lastLayer] = addEncoderBlock(layers, connect, ...
                                         prevName, inCh, outCh, blkName);
