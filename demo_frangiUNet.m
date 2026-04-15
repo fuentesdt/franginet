@@ -43,12 +43,12 @@ fprintf('\n=== Visualising a sample volume (MIPs) ===\n');
 [vol_s, mask_s] = syntheticVesselVolume(VOL_SIZE);
 
 figure('Name','Sample training pair (MIPs)','Color','w');
-subplot(2,3,1); imshow(max(vol_s,  [],3),[]); title('Input  — axial MIP');
-subplot(2,3,2); imshow(max(vol_s,  [],2),[]); title('Input  — coronal MIP');
-subplot(2,3,3); imshow(max(vol_s,  [],1),[]); title('Input  — sagittal MIP');
-subplot(2,3,4); imshow(max(mask_s, [],3),[]); title('GT mask — axial MIP');
-subplot(2,3,5); imshow(max(mask_s, [],2),[]); title('GT mask — coronal MIP');
-subplot(2,3,6); imshow(max(mask_s, [],1),[]); title('GT mask — sagittal MIP');
+subplot(2,3,1); imshow(squeeze(max(vol_s,  [],3)),[]); title('Input  — axial MIP');
+subplot(2,3,2); imshow(squeeze(max(vol_s,  [],2)),[]); title('Input  — coronal MIP');
+subplot(2,3,3); imshow(squeeze(max(vol_s,  [],1)),[]); title('Input  — sagittal MIP');
+subplot(2,3,4); imshow(squeeze(max(mask_s, [],3)),[]); title('GT mask — axial MIP');
+subplot(2,3,5); imshow(squeeze(max(mask_s, [],2)),[]); title('GT mask — coronal MIP');
+subplot(2,3,6); imshow(squeeze(max(mask_s, [],1)),[]); title('GT mask — sagittal MIP');
 
 %% ── 2. Train hybrid 3-D network ────────────────────────────────────────
 fprintf('\n=== Training hybrid 3-D Frangi-UNet ===\n');
@@ -99,9 +99,9 @@ titles = {'Input','GT mask','Predicted prob','Predicted mask'};
 data   = {vol_t, mask_t, prob_t, pred_t};
 for col = 1:4
     d = data{col};
-    subplot(3,4,col);     imshow(max(d,[],3),[]); title([titles{col} ' axial']);
-    subplot(3,4,col+4);   imshow(max(d,[],2),[]); title([titles{col} ' coronal']);
-    subplot(3,4,col+8);   imshow(max(d,[],1),[]); title([titles{col} ' sagittal']);
+    subplot(3,4,col);     imshow(squeeze(max(d,[],3)),[]); title([titles{col} ' axial']);
+    subplot(3,4,col+4);   imshow(squeeze(max(d,[],2)),[]); title([titles{col} ' coronal']);
+    subplot(3,4,col+8);   imshow(squeeze(max(d,[],1)),[]); title([titles{col} ' sagittal']);
 end
 
 %% ── 5. Evaluate ─────────────────────────────────────────────────────────

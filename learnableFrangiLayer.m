@@ -74,32 +74,50 @@ classdef learnableFrangiLayer < nnet.layer.Layer & nnet.layer.Formattable
         % -----------------------------------------------------------------
         function Z = predict(layer, X)
         % PREDICT  Forward pass – returns max-scale vesselness volume.
-        %   X : dlarray  [H W D C B], single-channel expected (C=1)
-        %   Z : dlarray  [H W D 1 B]  vesselness in [0,1]
+        %
+        %   image3dInputLayer([H W D 1]) delivers:
+        %     [H W D 1 B]  'SSSCB'  during training  (5-D, explicit batch)
+        %     [H W D 1]    'SSSC'   during network validation  (4-D, no batch)
+        %   Both ranks are handled identically; Z matches the input rank.
 
             sigmas = exp(layer.logSigmas);   % [1 1 1 1 nS]
             alpha  = exp(layer.logAlpha);
             beta   = exp(layer.logBeta);
             c      = exp(layer.logC);
 
-            % Use first channel only
-            if size(X, 4) > 1
-                X = X(:,:,:,1,:);
+            sz = size(X);
+            has_batch = (numel(sz) == 5);   % false during validation
+
+            if has_batch
+                H = sz(1); W = sz(2); D = sz(3); B = sz(5);
+                if sz(4) > 1, X = X(:,:,:,1,:); end
+                X5 = X;   % already [H W D 1 B]
+            else
+                % Validation: [H W D 1] — wrap a singleton batch dim
+                H = sz(1); W = sz(2); D = sz(3);
+                X5 = dlarray(reshape(stripdims(X), H, W, D, 1, 1), 'SSSCB');
+                B  = 1;
             end
 
-            sz = size(X);
-            H = sz(1); W = sz(2); D = sz(3); B = sz(5);
             nS = layer.NumScales;
 
-            V_max = zeros([H W D 1 B], 'like', X);
+            % Initialise accumulator as a labelled dlarray of zeros so that
+            % max() between accumulator and V_s preserves format labels.
+            V_max = dlarray(zeros(H, W, D, 1, B, 'single'), 'SSSCB');
 
             for s = 1:nS
                 sig = sigmas(1,1,1,1,s);
-                V_s = frangiScaleResponse3D(X, sig, alpha, beta, c);
+                V_s = frangiScaleResponse3D(X5, sig, alpha, beta, c);
                 V_max = max(V_max, V_s);
             end
 
-            Z = V_max;
+            % Return same rank as the input so the downstream
+            % concatenationLayer sees matching shapes from both branches.
+            if has_batch
+                Z = V_max;   % [H W D 1 B]  'SSSCB'
+            else
+                Z = dlarray(reshape(stripdims(V_max), H, W, D, 1), 'SSSC');
+            end
         end
     end
 end
@@ -236,5 +254,5 @@ function Y = dlConv3(X, K)
     padH = floor(kH/2);
     padW = floor(kW/2);
     padD = floor(kD/2);
-    Y = dlconv(X, K5D, [], 'Padding', [padH padH padW padW padD padD]);
+    Y = dlconv(X, K5D, 0, 'Padding', [padH padH padW padW padD padD]);
 end

@@ -24,8 +24,10 @@ function lgraph = buildFrangiUNet(opts)
     connect = {};   % {src, dst} pairs
 
     % ── Input ────────────────────────────────────────────────────────────
-    layers{end+1} = imageInputLayer([H W D 1], 'Name','input', ...
-                                    'Normalization','none');
+    % image3dInputLayer (introduced R2019b) is required for volumetric data.
+    % imageInputLayer only accepts 2-D sizes ([h w] or [h w c]).
+    layers{end+1} = image3dInputLayer([H W D 1], 'Name','input', ...
+                                      'Normalization','none');
 
     % ── Learnable Frangi branch ──────────────────────────────────────────
     layers{end+1} = learnableFrangiLayer(opts.numScales, ...
@@ -97,8 +99,13 @@ function lgraph = buildFrangiUNet(opts)
     connect{end+1} = {'sigmoid','loss'};
 
     % ── Assemble DAG ─────────────────────────────────────────────────────
+    % Add each layer individually to avoid the auto-connect behaviour that
+    % addLayers triggers when given an array (it would connect them in series,
+    % causing "connection already exists" errors when we wire the DAG below).
     lgraph = layerGraph();
-    lgraph = addLayers(lgraph, [layers{:}]);
+    for k = 1:numel(layers)
+        lgraph = addLayers(lgraph, layers{k});
+    end
     for k = 1:numel(connect)
         lgraph = connectLayers(lgraph, connect{k}{1}, connect{k}{2});
     end

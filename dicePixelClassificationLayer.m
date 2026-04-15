@@ -67,7 +67,7 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
         end
 
         % -----------------------------------------------------------------
-        function dX = backwardLoss(layer, Y, T, dLdY_upstream)
+        function dX = backwardLoss(layer, Y, T)
         % BACKWARDLOSS  Analytical gradients (faster and more stable than
         %               auto-diff fallback).
 
@@ -95,10 +95,6 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
 
             % ── Combined ─────────────────────────────────────────────────
             dX = layer.lambdaDice * dDice_dY + layer.lambdaBCE * dBCE_dY;
-
-            if nargin >= 4 && ~isempty(dLdY_upstream)
-                dX = dX * dLdY_upstream;
-            end
         end
     end
 end
