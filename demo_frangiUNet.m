@@ -75,10 +75,10 @@ fprintf('\n=== Learned 3-D Frangi parameters ===\n');
 layerIdx = find(strcmp({trainedNet.Layers.Name}, 'frangi'), 1);
 if ~isempty(layerIdx)
     fl = trainedNet.Layers(layerIdx);
-    learned_sigmas = exp(double(extractdata(fl.logSigmas(:))));
-    learned_alpha  = exp(double(extractdata(fl.logAlpha)));
-    learned_beta   = exp(double(extractdata(fl.logBeta)));
-    learned_c      = exp(double(extractdata(fl.logC)));
+    learned_sigmas = exp(double(fl.logSigmas(:)));
+    learned_alpha  = exp(double(fl.logAlpha));
+    learned_beta   = exp(double(fl.logBeta));
+    learned_c      = exp(double(fl.logC));
 
     fprintf('  Learned sigmas : '); fprintf('%.3f  ', learned_sigmas); fprintf('\n');
     fprintf('  Learned alpha  : %.4f  (plate/tube discrimination)\n', learned_alpha);
