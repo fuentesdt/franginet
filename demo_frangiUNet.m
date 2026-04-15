@@ -68,6 +68,7 @@ opts = struct( ...
     'plots',        'none' ...
 );
 
+%analyzeNetwork(trainedNet);
 [trainedNet, trainInfo] = trainFrangiUNet(imgDir, labelDir, opts);
 
 %% ── 3. Inspect learned Frangi parameters ───────────────────────────────
