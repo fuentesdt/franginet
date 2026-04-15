@@ -4,8 +4,9 @@ function results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
 %   results = evaluateFrangiUNet(net, imgDir, labelDir)
 %   results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
 %
-%   imgDir / labelDir must contain .mat files whose first variable is a
-%   [H W D] single-precision volume or binary mask respectively.
+%   imgDir / labelDir must contain NIfTI files (.nii or .nii.gz).
+%   Images should be single-precision float volumes; labels should be
+%   binary masks (any numeric type — thresholded at 0.5 internally).
 %
 %   OUTPUTS  results struct with fields:
 %     .dice    – per-volume Dice coefficient  [N×1]
@@ -23,11 +24,13 @@ function results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
 
     if ~exist(opts.outDir,'dir'), mkdir(opts.outDir); end
 
-    imgFiles   = dir(fullfile(imgDir,   '*.mat'));
-    labelFiles = dir(fullfile(labelDir, '*.mat'));
+    imgFiles   = [dir(fullfile(imgDir,   '*.nii')); ...
+                  dir(fullfile(imgDir,   '*.nii.gz'))];
+    labelFiles = [dir(fullfile(labelDir, '*.nii')); ...
+                  dir(fullfile(labelDir, '*.nii.gz'))];
 
     N = numel(imgFiles);
-    assert(N == numel(labelFiles), 'Image/label count mismatch (%d vs %d).', ...
+    assert(N == numel(labelFiles), 'NIfTI image/label count mismatch (%d vs %d).', ...
            N, numel(labelFiles));
 
     dice_v   = zeros(N,1);
@@ -38,14 +41,8 @@ function results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
 
     for i = 1:N
         % ── Load ─────────────────────────────────────────────────────────
-        volData   = load(fullfile(imgDir,   imgFiles(i).name));
-        maskData  = load(fullfile(labelDir, labelFiles(i).name));
-
-        volFields  = fieldnames(volData);
-        maskFields = fieldnames(maskData);
-
-        vol   = im2single(volData.(volFields{1}));
-        label = maskData.(maskFields{1});
+        vol   = im2single(niftiread(fullfile(imgDir,   imgFiles(i).name)));
+        label = niftiread(fullfile(labelDir, labelFiles(i).name));
 
         % ── Preprocess ───────────────────────────────────────────────────
         vol_rs   = imresize3(vol,   opts.imgSize);
@@ -65,11 +62,11 @@ function results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
         auc_v(i)    = computeAUC(prob(:), double(label_rs(:)));
 
         % ── Save outputs ─────────────────────────────────────────────────
-        [~,fname] = fileparts(imgFiles(i).name);
-        prob_vol  = single(prob);                                   %#ok<NASGU>
-        pred_mask = uint8(pred);                                    %#ok<NASGU>
-        save(fullfile(opts.outDir, [fname '_prob.mat']), 'prob_vol');
-        save(fullfile(opts.outDir, [fname '_mask.mat']), 'pred_mask');
+        % Strip both .nii and .nii.gz to get a clean base name
+        [~, fname] = fileparts(imgFiles(i).name);
+        fname = regexprep(fname, '\.nii$', '');   % handles double-ext edge case
+        niftiwrite(single(prob), fullfile(opts.outDir, [fname '_prob.nii']));
+        niftiwrite(uint8(pred),  fullfile(opts.outDir, [fname '_mask.nii']));
 
         if mod(i,5)==0 || i==N
             fprintf('  [%d/%d] Dice=%.3f  clDice=%.3f  AUC=%.3f\n', ...

@@ -31,10 +31,8 @@ mkdir(imgDir); mkdir(labelDir);
 
 for i = 1:nTotal
     [vol, mask] = syntheticVesselVolume(VOL_SIZE);
-    vol_data  = vol;                                                 %#ok<NASGU>
-    mask_data = mask;                                                %#ok<NASGU>
-    save(fullfile(imgDir,   sprintf('%04d.mat',i)), 'vol_data');
-    save(fullfile(labelDir, sprintf('%04d.mat',i)), 'mask_data');
+    niftiwrite(single(vol),  fullfile(imgDir,   sprintf('%04d.nii', i)));
+    niftiwrite(single(mask), fullfile(labelDir, sprintf('%04d.nii', i)));
 end
 fprintf('  Saved %d volume/label pairs.\n', nTotal);
 

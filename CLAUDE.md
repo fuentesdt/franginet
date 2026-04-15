@@ -15,9 +15,11 @@ A MATLAB implementation of a hybrid vessel segmentation architecture that combin
 
 ## Data format
 
-Input volumes and labels are stored as `.mat` files, one per sample:
-- `imgDir/*.mat` — each file contains one variable: a `[H W D]` `single` array (intensity)
-- `labelDir/*.mat` — each file contains one variable: a `[H W D]` binary mask
+Input volumes and labels are NIfTI files (`.nii` or `.nii.gz`), one per sample:
+- `imgDir/*.nii` — single-precision float intensity volume `[H W D]`
+- `labelDir/*.nii` — binary mask `[H W D]` (any numeric type; thresholded at 0.5 on load)
+
+Files are paired by sorted order within each directory; filenames do not need to match.
 
 ## Running the code
 

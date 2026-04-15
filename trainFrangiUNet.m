@@ -85,19 +85,22 @@ end
 
 % =========================================================================
 function ds = buildDatastore(imgDir, labelDir, opts)
-% Each .mat file must contain exactly one variable: the volume array.
+% Accepts NIfTI files (.nii or .nii.gz) in imgDir and labelDir.
+% Files are paired in sorted order; names need not match as long as counts do.
 
-    imgDs   = fileDatastore(imgDir,   'ReadFcn', @loadVolume, ...
-                            'FileExtensions', '.mat');
-    labelDs = fileDatastore(labelDir, 'ReadFcn', @loadVolume, ...
-                            'FileExtensions', '.mat');
+    niiExts = {'.nii', '.nii.gz'};
+
+    imgDs   = fileDatastore(imgDir,   'ReadFcn', @loadNifti, ...
+                            'FileExtensions', niiExts);
+    labelDs = fileDatastore(labelDir, 'ReadFcn', @loadNifti, ...
+                            'FileExtensions', niiExts);
 
     n      = numel(imgDs.Files);
     nVal   = max(1, round(n * opts.valFraction));
     nTrain = n - nVal;
 
     assert(n == numel(labelDs.Files), ...
-        'Image/label .mat file count mismatch (%d vs %d).', n, numel(labelDs.Files));
+        'Image/label NIfTI file count mismatch (%d vs %d).', n, numel(labelDs.Files));
 
     cds = combine(imgDs, labelDs);
     cds = transform(cds, @(x) preprocessPair(x, opts));
@@ -107,11 +110,9 @@ function ds = buildDatastore(imgDir, labelDir, opts)
 end
 
 % =========================================================================
-function vol = loadVolume(filename)
-% Load the first variable from a .mat file and return it as single.
-    data   = load(filename);
-    fields = fieldnames(data);
-    vol    = single(data.(fields{1}));
+function vol = loadNifti(filename)
+% Read a NIfTI file (.nii or .nii.gz) and return a single-precision array.
+    vol = single(niftiread(filename));
 end
 
 % =========================================================================
