@@ -1,12 +1,13 @@
 %% demo_frangiUNet.m
-%  End-to-end demo of the hybrid 3-D learnable-Frangi + U-Net pipeline.
+%  Ablation demo: hybrid 3-D Frangi-UNet vs plain 3-D U-Net (control).
 %
 %  This script:
 %   1. Generates a small synthetic 3-D vessel dataset (no real data needed)
-%   2. Trains the hybrid network for a handful of epochs
-%   3. Evaluates and visualises results as maximum-intensity projections
+%   2. Trains BOTH networks on the same data (same opts, same seed)
+%   3. Evaluates each and prints a side-by-side accuracy comparison
+%   4. Visualises MIP predictions from both models on the same test volume
 %
-%  Tested on MATLAB R2023b with:
+%  Tested on MATLAB R2023b / R2025b with:
 %   - Deep Learning Toolbox
 %   - Image Processing Toolbox
 
@@ -50,10 +51,8 @@ subplot(2,3,4); imshow(squeeze(max(mask_s, [],3)),[]); title('GT mask — axial 
 subplot(2,3,5); imshow(squeeze(max(mask_s, [],2)),[]); title('GT mask — coronal MIP');
 subplot(2,3,6); imshow(squeeze(max(mask_s, [],1)),[]); title('GT mask — sagittal MIP');
 
-%% ── 2. Train hybrid 3-D network ────────────────────────────────────────
-fprintf('\n=== Training hybrid 3-D Frangi-UNet ===\n');
-
-opts = struct( ...
+%% ── 2. Shared training options ──────────────────────────────────────────
+base_opts = struct( ...
     'imgSize',      VOL_SIZE, ...
     'numScales',    3, ...
     'sigmaMin',     1.0, ...
@@ -68,14 +67,25 @@ opts = struct( ...
     'plots',        'none' ...
 );
 
-%analyzeNetwork(trainedNet);
-[trainedNet, trainInfo] = trainFrangiUNet(imgDir, labelDir, opts);
+%% ── 3. Train hybrid Frangi-UNet ─────────────────────────────────────────
+fprintf('\n=== [1/2] Training hybrid Frangi-UNet ===\n');
+rng(42);   % same initialisation for fair comparison
+opts_hybrid           = base_opts;
+opts_hybrid.useFrangi = true;
+[net_hybrid, info_hybrid] = trainFrangiUNet(imgDir, labelDir, opts_hybrid);
 
-%% ── 3. Inspect learned Frangi parameters ───────────────────────────────
+%% ── 4. Train plain U-Net (control) ─────────────────────────────────────
+fprintf('\n=== [2/2] Training plain U-Net (control) ===\n');
+rng(42);
+opts_plain           = base_opts;
+opts_plain.useFrangi = false;
+[net_plain, info_plain] = trainFrangiUNet(imgDir, labelDir, opts_plain);
+
+%% ── 5. Inspect learned Frangi parameters (hybrid only) ─────────────────
 fprintf('\n=== Learned 3-D Frangi parameters ===\n');
-layerIdx = find(strcmp({trainedNet.Layers.Name}, 'frangi'), 1);
+layerIdx = find(strcmp({net_hybrid.Layers.Name}, 'frangi'), 1);
 if ~isempty(layerIdx)
-    fl = trainedNet.Layers(layerIdx);
+    fl = net_hybrid.Layers(layerIdx);
     learned_sigmas = exp(double(fl.logSigmas(:)));
     learned_alpha  = exp(double(fl.logAlpha));
     learned_beta   = exp(double(fl.logBeta));
@@ -87,38 +97,68 @@ if ~isempty(layerIdx)
     fprintf('  Learned c      : %.2f  (background suppression)\n',    learned_c);
 end
 
-%% ── 4. Visualise predictions (MIPs) ────────────────────────────────────
-fprintf('\n=== Visualising predictions ===\n');
+%% ── 6. Evaluate both models ─────────────────────────────────────────────
+fprintf('\n=== Evaluating both models ===\n');
 
-[vol_t, mask_t] = syntheticVesselVolume(VOL_SIZE);
-X_t    = reshape(im2single(vol_t), [VOL_SIZE 1 1]);
-prob_t = double(squeeze(predict(trainedNet, X_t)));
-pred_t = prob_t >= 0.5;
-
-figure('Name','Prediction MIPs','Color','w');
-titles = {'Input','GT mask','Predicted prob','Predicted mask'};
-data   = {vol_t, mask_t, prob_t, pred_t};
-for col = 1:4
-    d = data{col};
-    subplot(3,4,col);     imshow(squeeze(max(d,[],3)),[]); title([titles{col} ' axial']);
-    subplot(3,4,col+4);   imshow(squeeze(max(d,[],2)),[]); title([titles{col} ' coronal']);
-    subplot(3,4,col+8);   imshow(squeeze(max(d,[],1)),[]); title([titles{col} ' sagittal']);
-end
-
-%% ── 5. Evaluate ─────────────────────────────────────────────────────────
 evalOpts.imgSize   = VOL_SIZE;
 evalOpts.threshold = 0.5;
-evalOpts.outDir    = fullfile(tempdir, 'frangi_demo3d', 'preds');
 
-results = evaluateFrangiUNet(trainedNet, imgDir, labelDir, evalOpts);
+evalOpts.outDir = fullfile(tempdir, 'frangi_demo3d', 'preds_hybrid');
+results_hybrid  = evaluateFrangiUNet(net_hybrid, imgDir, labelDir, evalOpts);
 
-%% ── 6. Training curve ───────────────────────────────────────────────────
-figure('Name','Training curves','Color','w');
-plot(trainInfo.TrainingLoss,   'b-',  'LineWidth',1.5); hold on;
-plot(trainInfo.ValidationLoss, 'r--', 'LineWidth',1.5);
-xlabel('Iteration'); ylabel('Loss (Dice + BCE)');
-legend('Training','Validation'); grid on;
-title('Hybrid 3-D Frangi–UNet Training Loss');
+evalOpts.outDir = fullfile(tempdir, 'frangi_demo3d', 'preds_plain');
+results_plain   = evaluateFrangiUNet(net_plain,  imgDir, labelDir, evalOpts);
+
+%% ── 7. Accuracy comparison table ────────────────────────────────────────
+fprintf('\n');
+fprintf('╔══════════════════════╦══════════╦══════════╦══════════╗\n');
+fprintf('║ Model                ║   Dice   ║  clDice  ║   AUC    ║\n');
+fprintf('╠══════════════════════╬══════════╬══════════╬══════════╣\n');
+fprintf('║ Hybrid Frangi-UNet   ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
+        results_hybrid.meanDice, results_hybrid.meanClDice, results_hybrid.meanAUC);
+fprintf('║ Plain U-Net          ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
+        results_plain.meanDice,  results_plain.meanClDice,  results_plain.meanAUC);
+fprintf('╠══════════════════════╬══════════╬══════════╬══════════╣\n');
+fprintf('║ Δ (hybrid − plain)   ║ %+8.4f ║ %+8.4f ║ %+8.4f ║\n', ...
+        results_hybrid.meanDice  - results_plain.meanDice, ...
+        results_hybrid.meanClDice - results_plain.meanClDice, ...
+        results_hybrid.meanAUC   - results_plain.meanAUC);
+fprintf('╚══════════════════════╩══════════╩══════════╩══════════╝\n');
+
+%% ── 8. Side-by-side MIP predictions ────────────────────────────────────
+fprintf('\n=== Visualising side-by-side predictions ===\n');
+
+rng(0);
+[vol_t, mask_t] = syntheticVesselVolume(VOL_SIZE);
+X_t = reshape(im2single(vol_t), [VOL_SIZE 1 1]);
+
+prob_hybrid = double(squeeze(predict(net_hybrid, X_t)));
+prob_plain  = double(squeeze(predict(net_plain,  X_t)));
+pred_hybrid = prob_hybrid >= 0.5;
+pred_plain  = prob_plain  >= 0.5;
+
+cols   = {'Input', 'GT mask', 'Hybrid prob', 'Hybrid mask', 'Plain prob', 'Plain mask'};
+vols   = {vol_t, mask_t, prob_hybrid, pred_hybrid, prob_plain, pred_plain};
+nCols  = numel(cols);
+
+figure('Name','Model comparison — axial / coronal / sagittal MIPs','Color','w');
+for c = 1:nCols
+    v = vols{c};
+    subplot(3, nCols, c);          imshow(squeeze(max(v,[],3)),[]); title([cols{c} ' (ax)']);
+    subplot(3, nCols, c + nCols);  imshow(squeeze(max(v,[],2)),[]); title([cols{c} ' (cor)']);
+    subplot(3, nCols, c + 2*nCols);imshow(squeeze(max(v,[],1)),[]); title([cols{c} ' (sag)']);
+end
+
+%% ── 9. Training-loss curves (both models) ──────────────────────────────
+figure('Name','Training curves — hybrid vs plain','Color','w');
+semilogy(info_hybrid.TrainingLoss,   'b-',  'LineWidth',1.5); hold on;
+semilogy(info_plain.TrainingLoss,    'r-',  'LineWidth',1.5);
+semilogy(info_hybrid.ValidationLoss, 'b--', 'LineWidth',1.5);
+semilogy(info_plain.ValidationLoss,  'r--', 'LineWidth',1.5);
+xlabel('Iteration'); ylabel('Loss (Dice + BCE, log scale)');
+legend('Hybrid train','Plain train','Hybrid val','Plain val', 'Location','northeast');
+grid on;
+title('Hybrid Frangi-UNet vs Plain U-Net — Training Loss');
 
 fprintf('\nDemo complete.\n');
 

@@ -1,12 +1,15 @@
 function lgraph = buildFrangiUNet(opts)
 % BUILDFRANGUINET  Construct the hybrid learnable-Frangi + U-Net DAG for 3-D volumes.
 %
-%   The architecture has two parallel input branches that are concatenated
-%   before entering the U-Net encoder:
+%   opts.useFrangi (default true) controls the architecture:
 %
-%     ┌── raw input ─────────────────────────────────────────┐
-%     │                                                      ↓
-%   input ──> LearnableFrangiLayer ──> frangi response → concat → U-Net
+%     true  — Hybrid: two branches concatenated before the encoder
+%               ┌── raw input ─────────────────────────────────────┐
+%               │                                                  ↓
+%             input ──> LearnableFrangiLayer ──> frangi → concat → U-Net
+%
+%     false — Plain U-Net control (no Frangi branch):
+%             input ──────────────────────────────────────────────> U-Net
 %
 %   Each encoder block: Conv3D-BN-ReLU → Conv3D-BN-ReLU → MaxPool3D
 %   Each decoder block: TransConv3D (upsample) → concat(skip) → Conv3D-BN-ReLU × 2
@@ -29,22 +32,31 @@ function lgraph = buildFrangiUNet(opts)
     layers{end+1} = image3dInputLayer([H W D 1], 'Name','input', ...
                                       'Normalization','none');
 
-    % ── Learnable Frangi branch ──────────────────────────────────────────
-    layers{end+1} = learnableFrangiLayer(opts.numScales, ...
-                                         opts.sigmaMin, ...
-                                         opts.sigmaMax, ...
-                                         'Name','frangi');
-    connect{end+1} = {'input','frangi'};
+    % ── Optional Frangi branch ───────────────────────────────────────────
+    useFrangi = ~isfield(opts,'useFrangi') || opts.useFrangi;
 
-    % ── Concatenate raw + vesselness (along channel dim 4 for 3-D: H×W×D×C×B) ──
-    layers{end+1} = concatenationLayer(4, 2, 'Name','cat_input');
-    connect{end+1} = {'input',  'cat_input/in1'};
-    connect{end+1} = {'frangi', 'cat_input/in2'};
+    if useFrangi
+        layers{end+1} = learnableFrangiLayer(opts.numScales, ...
+                                             opts.sigmaMin, ...
+                                             opts.sigmaMax, ...
+                                             'Name','frangi');
+        connect{end+1} = {'input','frangi'};
+
+        % Concatenate raw + vesselness along channel dim 4: [H W D C B]
+        layers{end+1} = concatenationLayer(4, 2, 'Name','cat_input');
+        connect{end+1} = {'input',  'cat_input/in1'};
+        connect{end+1} = {'frangi', 'cat_input/in2'};
+
+        prevName = 'cat_input';
+        inCh     = 2;   % raw (1ch) + frangi (1ch)
+    else
+        % Plain U-Net: raw input feeds directly into the encoder
+        prevName = 'input';
+        inCh     = 1;
+    end
 
     % ── Encoder ──────────────────────────────────────────────────────────
     skipNames = cell(1, Dp);
-    prevName  = 'cat_input';
-    inCh      = 2;    % raw (1ch) + frangi (1ch)
 
     for d = 1:Dp
         outCh   = nF * 2^(d-1);
