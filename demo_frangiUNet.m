@@ -199,8 +199,10 @@ function [vol, mask] = syntheticVesselVolume(sz)
         end
     end
 
-    bg  = 0.1 + 0.05*randn(H, W, D);
-    vol = single(bg + 0.7*single(mask) + 0.05*randn(H, W, D));
+    SNR = 5;
+    mysigma = .05;
+    bg  = 0.1 + mysigma *randn(H, W, D);
+    vol = single(bg + SNR*mysigma*single(mask) + mysigma *randn(H, W, D));
     vol = max(0, min(1, vol));
     mask = single(mask);
 end
