@@ -25,7 +25,8 @@ clear; clc; close all;
 addpath(fileparts(mfilename('fullpath')));
 
 %% ── Configuration ────────────────────────────────────────────────────────
-CSV_FILE    = 'trainingdata.csv';
+%CSV_FILE    = 'trainingdata.csv';
+CSV_FILE    = 'vesseltraininglr.csv';
 OUTPUT_DIR  = 'frangi_comparison';
 
 % Target voxel spacing (mm per axis).
@@ -62,7 +63,7 @@ rng(42);
 %% ── 1. Load CSV manifest ─────────────────────────────────────────────────
 fprintf('=== Loading manifest: %s ===\n', CSV_FILE);
 
-T = readtable(CSV_FILE, 'ReadVariableNames', false);
+T = readtable(CSV_FILE, 'ReadVariableNames', false,'Delimiter',',','NumHeaderLines',1);
 assert(width(T) >= 3, 'CSV must have at least 3 columns: id, mask, image.');
 
 ids       = string(T{:,1});
