@@ -81,11 +81,22 @@ Eigenvalues are returned value-sorted descending (ev1 ≥ ev2 ≥ ev3). For brig
 Extends `nnet.layer.RegressionLayer`. Both `forwardLoss` and `backwardLoss` are implemented explicitly. Batch size is determined via `size(Y, ndims(Y))` so the layer is agnostic to spatial rank (works for both 2-D and 3-D tensors). Default split: 70% Dice + 30% BCE.
 
 ### Data loading (trainFrangiUNet.m)
-Uses `fileDatastore` (with a custom `ReadFcn` that loads the first `.mat` variable) combined via `combine()` and `transform()`. This mirrors the 2-D `imageDatastore` pattern while supporting volumetric `.mat` files. Each preprocessed sample has shape `[H W D 1]`.
+Uses `fileDatastore` (with `ReadFcn=@loadNifti`) combined via `combine()` and `transform()`. Accepts `.nii` and `.nii.gz`. Each preprocessed sample has shape `[H W D 1]`.
 
 ### Evaluation metrics (evaluateFrangiUNet.m)
 - **Dice** — standard F1 on binary masks
 - **clDice** — centerline Dice via `bwskel` (supports 3-D natively in MATLAB R2019a+); topology-aware, penalises missed vessel branches
 - **AUC-ROC** — threshold-independent, uses MATLAB's `perfcurve`
 
-Outputs are saved as `.mat` files (`_prob.mat`, `_mask.mat`) in `opts.outDir`.
+Outputs are saved as NIfTI files (`_prob.nii`, `_mask.nii`) in `opts.outDir`.
+
+## Entry points
+
+| Script | Purpose |
+|--------|---------|
+| `demo_frangiUNet.m` | Self-contained demo — generates synthetic data, trains both models, compares |
+| `democomparison.m` | Real-data pipeline — reads a CSV manifest, resamples to common spacing, trains & evaluates |
+| `toydata.m` | Generates a 100-sample toy NIfTI dataset (3-D cylinders) for quick testing |
+
+### democomparison.m CSV format (no header)
+Column 1: sample ID, Column 2: mask path (`.nii`/`.nii.gz`), Column 3: image path. Paths may be relative to the CSV file's directory.
