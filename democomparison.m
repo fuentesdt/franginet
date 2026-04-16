@@ -121,29 +121,40 @@ for k = 1:N
     [imgRs, ~] = resampleNifti(imgPaths(k),  TARGET_SPACING, 'linear');
     imgRs = single(imgRs);
 
-    % Binary mask — nearest-neighbour, then re-threshold
-    [mskRs, ~] = resampleNifti(maskPaths(k), TARGET_SPACING, 'nearest');
-    mskRs = single(mskRs > 0.5);
+    % Label mask — nearest-neighbour; keep label 2 only (discard label 1)
+    [mskRaw, ~] = resampleNifti(maskPaths(k), TARGET_SPACING, 'nearest');
+    mskRs = single(mskRaw > .5 );
+    mskVessel = single(mskRaw ==2 );
 
-    resampledSizes(k,:) = size(imgRs, [1 2 3]);
+    % Bounding box of the binary label
+    [r1,r2, c1,c2, s1,s2] = boundingBox3(mskRs);
 
-    % Normalise intensity to [0,1] per-volume
-    lo = min(imgRs(:));  hi = max(imgRs(:));
+    % Crop both image and label to the bounding box
+    imgCrop = imgRs(r1:r2, c1:c2, s1:s2);
+    mskBinary = mskRs(r1:r2, c1:c2, s1:s2);
+    mskCrop = mskVessel(r1:r2, c1:c2, s1:s2);
+
+    resampledSizes(k,:) = size(imgCrop, [1 2 3]);
+
+    % Normalise intensity to [0,1] per-volume, then zero-out background
+    lo = min(imgCrop(:));  hi = max(imgCrop(:));
     if hi > lo
-        imgRs = (imgRs - lo) / (hi - lo);
+        imgCrop = (imgCrop - lo) / (hi - lo);
     end
+    imgCrop = imgCrop .* mskBinary;   % apply binary mask to image
 
     fname = sprintf('%s.nii', ids(k));
     if ismember(k, trainIdx)
-        niftiwrite(imgRs, fullfile(trainImgDir,  fname));
-        niftiwrite(mskRs, fullfile(trainMaskDir, fname));
+        niftiwrite(imgCrop, fullfile(trainImgDir,  fname));
+        niftiwrite(mskCrop, fullfile(trainMaskDir, fname));
     else
-        niftiwrite(imgRs, fullfile(testImgDir,   fname));
-        niftiwrite(mskRs, fullfile(testMaskDir,  fname));
+        niftiwrite(imgCrop, fullfile(testImgDir,   fname));
+        niftiwrite(mskCrop, fullfile(testMaskDir,  fname));
     end
 
-    fprintf('  [%d/%d] %-20s → [%3d %3d %3d] vox\n', ...
-            k, N, ids(k), resampledSizes(k,1), resampledSizes(k,2), resampledSizes(k,3));
+    fprintf('  [%d/%d] %-20s → [%3d %3d %3d] vox  (bb rows %d-%d  cols %d-%d  slices %d-%d)\n', ...
+            k, N, ids(k), resampledSizes(k,1), resampledSizes(k,2), resampledSizes(k,3), ...
+            r1, r2, c1, c2, s1, s2);
 end
 
 fprintf('\nPatch-based training: patchSize=[%d %d %d]  patchesPerVolume=%d\n', ...
@@ -316,6 +327,17 @@ function p = makeAbsolute(p)
     else
         p = fullfile(pwd, p);
     end
+end
+
+% -------------------------------------------------------------------------
+function [r1,r2, c1,c2, s1,s2] = boundingBox3(mask)
+% Return the tight axis-aligned bounding box of all non-zero voxels in mask.
+% Outputs are inclusive 1-based indices along [row col slice].
+    idx = find(mask);
+    [r, c, s] = ind2sub(size(mask), idx);
+    r1 = min(r);  r2 = max(r);
+    c1 = min(c);  c2 = max(c);
+    s1 = min(s);  s2 = max(s);
 end
 
 % -------------------------------------------------------------------------
