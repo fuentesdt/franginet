@@ -36,17 +36,20 @@ results = evaluateFrangiUNet(net, '/path/to/test/volumes', '/path/to/test/masks'
 
 Default training opts (all fields optional, merged with defaults in `trainFrangiUNet`):
 ```matlab
-opts.imgSize      = [64 64 32];  % spatial size [H W D]
-opts.numScales    = 4;           % Frangi scale levels
-opts.sigmaMin     = 1.0;         % minimum Gaussian sigma (voxels)
-opts.sigmaMax     = 4.0;         % maximum Gaussian sigma (voxels)
-opts.encoderDepth = 3;           % U-Net encoder depth (2^depth <= min(H,W,D))
-opts.initFilters  = 16;          % filters in first encoder block
-opts.epochs       = 50;
-opts.batchSize    = 2;           % keep small — 3-D volumes are memory-heavy
-opts.lr           = 1e-3;
-opts.l2           = 1e-4;
-opts.valFraction  = 0.15;
+opts.patchSize          = [64 64 64];  % 3-D patch extracted from each volume [H W D]
+opts.patchOverlap       = [8 8 8];     % inference overlap per side; stride = patchSize - 2*overlap
+opts.patchesPerVolume   = 8;           % independent random patches drawn per volume per epoch
+opts.foregroundFraction = 0.8;         % probability a training patch is centred on a fg voxel
+opts.numScales          = 4;           % Frangi scale levels
+opts.sigmaMin           = 1.0;         % minimum Gaussian sigma (voxels)
+opts.sigmaMax           = 4.0;         % maximum Gaussian sigma (voxels)
+opts.encoderDepth       = 3;           % U-Net encoder depth (2^depth <= min patch dim)
+opts.initFilters        = 16;          % filters in first encoder block
+opts.epochs             = 50;
+opts.batchSize          = 2;           % keep small — 3-D patches are memory-heavy
+opts.lr                 = 1e-3;
+opts.l2                 = 1e-4;
+opts.valFraction        = 0.15;
 ```
 
 ## Architecture
@@ -80,8 +83,10 @@ Eigenvalues are returned value-sorted descending (ev1 ≥ ev2 ≥ ev3). For brig
 ### Loss function (dicePixelClassificationLayer.m)
 Extends `nnet.layer.RegressionLayer`. Both `forwardLoss` and `backwardLoss` are implemented explicitly. Batch size is determined via `size(Y, ndims(Y))` so the layer is agnostic to spatial rank (works for both 2-D and 3-D tensors). Default split: 70% Dice + 30% BCE.
 
-### Data loading (trainFrangiUNet.m)
-Uses `fileDatastore` (with `ReadFcn=@loadNifti`) combined via `combine()` and `transform()`. Accepts `.nii` and `.nii.gz`. Each preprocessed sample has shape `[H W D 1]`.
+### Patch-based training and inference (trainFrangiUNet.m / predictVolume.m)
+Training never loads full volumes into the network. Instead, `buildDatastore` replicates each file path `patchesPerVolume` times and uses a `transform` that calls `extractPatch` on every read — so each call returns a freshly-sampled random patch. Foreground-biased sampling: with probability `foregroundFraction`, the patch is centred on a randomly-selected positive (vessel) voxel plus ±patchSize/4 jitter; otherwise a uniformly-random patch. Volumes smaller than `patchSize` on any axis are zero-padded before sampling.
+
+Inference uses `predictVolume.m` (standalone file callable from any script): sliding window with stride = `patchSize - 2*patchOverlap`, Gaussian-weighted average in overlap regions. The network always sees exactly `patchSize` input. Volumes of any size are handled by padding to the next stride-aligned boundary and cropping the result back.
 
 ### Evaluation metrics (evaluateFrangiUNet.m)
 - **Dice** — standard F1 on binary masks

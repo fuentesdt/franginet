@@ -19,7 +19,7 @@ rng(42);
 %% ── 0. Generate synthetic 3-D dataset ──────────────────────────────────
 fprintf('=== Generating synthetic 3-D vessel volumes ===\n');
 
-VOL_SIZE = [64 64 32];   % [H W D] — small for demo speed
+VOL_SIZE = [96 96 80];   % [H W D] — must be >= patchSize on each axis
 
 nTrain = 20;
 nVal   = 5;
@@ -52,18 +52,21 @@ subplot(2,3,6); imshow(squeeze(max(mask_s, [],1)),[]); title('GT mask — sagitt
 
 %% ── 2. Shared training options ──────────────────────────────────────────
 base_opts = struct( ...
-    'imgSize',      VOL_SIZE, ...
-    'numScales',    3, ...
-    'sigmaMin',     1.0, ...
-    'sigmaMax',     3.0, ...
-    'encoderDepth', 2, ...    % shallow for demo speed
-    'initFilters',  8, ...    % small for demo speed
-    'lr',           5e-4, ...
-    'epochs',       50, ...   % increase to 50+ for real training
-    'batchSize',    2, ...
-    'l2',           1e-4, ...
-    'valFraction',  0.2, ...
-    'plots',        'none' ...
+    'patchSize',          [64 64 64], ...  % 3-D patch — network is trained on this size
+    'patchOverlap',       [8  8  8 ], ...  % inference overlap per side; stride = 48 48 48
+    'patchesPerVolume',   4, ...           % patches per volume per epoch (demo: keep small)
+    'foregroundFraction', 0.8, ...
+    'numScales',          3, ...
+    'sigmaMin',           1.0, ...
+    'sigmaMax',           3.0, ...
+    'encoderDepth',       2, ...    % shallow for demo speed
+    'initFilters',        8, ...    % small for demo speed
+    'lr',                 5e-4, ...
+    'epochs',             30, ...
+    'batchSize',          2, ...
+    'l2',                 1e-4, ...
+    'valFraction',        0.2, ...
+    'plots',              'none' ...
 );
 
 %% ── 3. Train hybrid Frangi-UNet ─────────────────────────────────────────
@@ -99,8 +102,9 @@ end
 %% ── 6. Evaluate both models ─────────────────────────────────────────────
 fprintf('\n=== Evaluating both models ===\n');
 
-evalOpts.imgSize   = VOL_SIZE;
-evalOpts.threshold = 0.5;
+evalOpts.patchSize    = base_opts.patchSize;
+evalOpts.patchOverlap = base_opts.patchOverlap;
+evalOpts.threshold    = 0.5;
 
 evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', 'preds_hybrid');
 results_hybrid  = evaluateFrangiUNet(net_hybrid, imgDir, labelDir, evalOpts);
@@ -129,10 +133,12 @@ fprintf('\n=== Visualising side-by-side predictions ===\n');
 
 rng(0);
 [vol_t, mask_t] = syntheticVesselVolume(VOL_SIZE);
-X_t = reshape(im2single(vol_t), [VOL_SIZE 1 1]);
 
-prob_hybrid = double(squeeze(predict(net_hybrid, X_t)));
-prob_plain  = double(squeeze(predict(net_plain,  X_t)));
+% Sliding-window inference on the full test volume (patchSize may differ from VOL_SIZE)
+vizOpts.patchSize    = base_opts.patchSize;
+vizOpts.patchOverlap = base_opts.patchOverlap;
+prob_hybrid = predictVolume(net_hybrid, vol_t, vizOpts);
+prob_plain  = predictVolume(net_plain,  vol_t, vizOpts);
 pred_hybrid = prob_hybrid >= 0.5;
 pred_plain  = prob_plain  >= 0.5;
 
