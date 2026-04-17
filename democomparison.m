@@ -137,10 +137,10 @@ for k = 1:N
     resampledSizes(k,:) = size(imgCrop, [1 2 3]);
 
     % Normalise intensity to [0,1] per-volume, then zero-out background
-    lo = min(imgCrop(:));  hi = max(imgCrop(:));
-    if hi > lo
-        imgCrop = (imgCrop - lo) / (hi - lo);
-    end
+    % lo = min(imgCrop(:));  hi = max(imgCrop(:));
+    % if hi > lo
+    %     imgCrop = (imgCrop - lo) / (hi - lo);
+    % end
     imgCrop = imgCrop .* mskBinary;   % apply binary mask to image
 
     fname = sprintf('%s.nii', ids(k));
