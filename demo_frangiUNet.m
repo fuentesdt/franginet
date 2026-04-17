@@ -96,14 +96,6 @@ if ~isempty(layerIdx)
             exp(double(fl.logC(ch))));
     end
 end
-poolIdx = find(strcmp({net_hybrid.Layers.Name}, 'frangi_pool'), 1);
-if ~isempty(poolIdx)
-    pl = net_hybrid.Layers(poolIdx);
-    w  = double(pl.logWeights);
-    w_soft = exp(w - max(w));  w_soft = w_soft / sum(w_soft);
-    fprintf('  Pool weights (softmax): ');
-    fprintf('%.3f  ', w_soft); fprintf('\n');
-end
 
 %% ── 6. Evaluate both models ─────────────────────────────────────────────
 fprintf('\n=== Evaluating both models ===\n');

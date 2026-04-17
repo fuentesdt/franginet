@@ -13,7 +13,7 @@ classdef learnableFrangiLayer < nnet.layer.Layer & nnet.layer.Formattable
 %   logBeta    [numChannels 1] — log blob-suppression coefficient
 %   logC       [numChannels 1] — log background/noise suppression coefficient
 %
-%   OUTPUT: [H W D numChannels B]  format 'SSSCB'
+%   OUTPUT: [H W D 1 B]  format 'SSSCB'  — pixelwise max across all channels
 
     properties (Learnable)
         logSigmas   % [numChannels 1]
@@ -74,12 +74,14 @@ classdef learnableFrangiLayer < nnet.layer.Layer & nnet.layer.Formattable
                 channels{ch} = frangiScaleResponse3D(X5, sig, alpha, beta, c);
             end
 
-            Z_batch = cat(4, channels{:});   % [H W D nC B]
+            % Pixelwise max across channels — gradients flow to the winning channel
+            Z_all   = cat(4, channels{:});                    % [H W D nC B]
+            Z_raw   = max(stripdims(Z_all), [], 4);           % [H W D 1  B]
 
             if has_batch
-                Z = Z_batch;
+                Z = dlarray(Z_raw, 'SSSCB');
             else
-                Z = dlarray(reshape(stripdims(Z_batch), H, W, D, nC), 'SSSC');
+                Z = dlarray(reshape(Z_raw, H, W, D, 1), 'SSSC');
             end
         end
     end
