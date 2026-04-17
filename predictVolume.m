@@ -85,9 +85,9 @@ function prob = predictVolume(net, vol, opts)
                 wsumAcc(i1:e1, i2:e2, i3:e3) = wsumAcc(i1:e1, i2:e2, i3:e3) + W;
 
                 cnt = cnt + 1;
-                if cnt == 1 || mod(cnt, max(1, floor(nPatches/5))) == 0 || cnt == nPatches
-                    fprintf('    patch %d/%d\n', cnt, nPatches);
-                end
+                %if cnt == 1 || mod(cnt, max(1, floor(nPatches/5))) == 0 || cnt == nPatches
+                %    fprintf('    patch %d/%d\n', cnt, nPatches);
+                %end
             end
         end
     end
