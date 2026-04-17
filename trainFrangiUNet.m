@@ -83,7 +83,10 @@ function opts = defaultOpts(opts)
         'valFraction',        0.15, ...
         'plots',              'training-progress', ...
         'useFrangi',          true, ...
-        'numFrangiChannels',  1 ...
+        'numFrangiChannels',  1, ...
+        'augFlip',            true, ...   % random 50/50 flip along each axis
+        'augNoiseStd',        0.02, ...   % additive Gaussian noise std (post-norm scale)
+        'augIntensityScale',  [0.9 1.1] ... % multiplicative intensity jitter range
     );
     fields = fieldnames(defaults);
     for k = 1:numel(fields)
@@ -206,6 +209,35 @@ function out = extractPatch(data, opts, useForegroundBias)
     lo = min(volPatch(:));  hi = max(volPatch(:));
     if hi > lo
         volPatch = (volPatch - lo) / (hi - lo);
+    end
+
+    % ── Augmentation (training only) ────────────────────────────────────
+    if useForegroundBias
+
+        % Random flip along each spatial axis independently
+        if opts.augFlip
+            for ax = 1:3
+                if rand() < 0.5
+                    volPatch  = flip(volPatch,  ax);
+                    maskPatch = flip(maskPatch, ax);
+                end
+            end
+        end
+
+        % Multiplicative intensity scaling (image only)
+        if opts.augIntensityScale(2) > opts.augIntensityScale(1)
+            scale    = opts.augIntensityScale(1) + ...
+                       rand() * diff(opts.augIntensityScale);
+            volPatch = volPatch * scale;
+        end
+
+        % Additive Gaussian noise (image only)
+        if opts.augNoiseStd > 0
+            volPatch = volPatch + opts.augNoiseStd * randn(size(volPatch), 'single');
+        end
+
+        % Clamp to [0, 1] after intensity perturbations
+        volPatch = max(0, min(1, volPatch));
     end
 
     out = {reshape(volPatch,  [pSz 1]), ...

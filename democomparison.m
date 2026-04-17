@@ -55,7 +55,10 @@ TRAIN_OPTS = struct( ...
     'l2',                 1e-4,       ...
     'valFraction',        0.15,       ...
     'plots',              'none',     ...
-    'numFrangiChannels',  10          ...
+    'numFrangiChannels',  10,         ...
+    'augFlip',            true,       ...
+    'augNoiseStd',        0.02,       ...
+    'augIntensityScale',  [0.9 1.1]   ...
 );
 
 rng(42);
@@ -159,6 +162,86 @@ end
 
 fprintf('\nPatch-based training: patchSize=[%d %d %d]  patchesPerVolume=%d\n', ...
         TRAIN_OPTS.patchSize, TRAIN_OPTS.patchesPerVolume);
+
+%% ── 4. Greedy hyperparameter search ─────────────────────────────────────
+%
+%  Optimises initFilters, encoderDepth, and patchSize one at a time (coordinate
+%  ascent).  Each trial trains the hybrid Frangi-UNet for SEARCH_EPOCHS epochs
+%  and uses the best validation loss as the selection criterion.  The winning
+%  value for each parameter is fixed before the next parameter is searched.
+%  TRAIN_OPTS is updated in-place so sections 5-6 inherit the best config.
+
+SEARCH_EPOCHS = max(10, round(TRAIN_OPTS.epochs * 0.25));
+
+SEARCH_PARAMS = { ...
+    'initFilters',  {8, 16, 32}; ...
+    'encoderDepth', {2, 3, 4}; ...
+    'patchSize',    {[32 32 32], [48 48 48], [64 64 64]}; ...
+};
+
+searchOpts        = TRAIN_OPTS;
+searchOpts.epochs = SEARCH_EPOCHS;
+searchOpts.plots  = 'none';
+
+searchLog = struct('param', {}, 'value', {}, 'valLoss', {}, 'chosen', {});
+
+fprintf('\n=== Greedy hyperparameter search (%d search epochs per trial) ===\n', ...
+        SEARCH_EPOCHS);
+
+for pi = 1:size(SEARCH_PARAMS, 1)
+    param      = SEARCH_PARAMS{pi, 1};
+    candidates = SEARCH_PARAMS{pi, 2};
+
+    fprintf('\n-- Searching %s (current best: %s) --\n', ...
+            param, mat2str(searchOpts.(param)));
+
+    bestLoss      = Inf;
+    bestCandidate = searchOpts.(param);
+
+    for ci = 1:numel(candidates)
+        cval     = candidates{ci};
+        trialOpts = searchOpts;
+        trialOpts.(param) = cval;
+
+        % Enforce 2^encoderDepth <= min(patchSize)
+        if 2^trialOpts.encoderDepth > min(trialOpts.patchSize)
+            fprintf('  %-12s = %-14s  SKIP (encoderDepth too deep for patchSize)\n', ...
+                    param, mat2str(cval));
+            continue
+        end
+
+        rng(42);
+        [~, trialInfo] = trainFrangiUNet(trainImgDir, trainMaskDir, trialOpts);
+        vl = min(trialInfo.ValidationLoss(~isnan(trialInfo.ValidationLoss)));
+
+        chosen = vl < bestLoss;
+        if chosen
+            bestLoss      = vl;
+            bestCandidate = cval;
+        end
+
+        fprintf('  %-12s = %-14s  val_loss = %.4f%s\n', ...
+                param, mat2str(cval), vl, repmat(' *', 1, chosen));
+
+        entry.param   = param;
+        entry.value   = mat2str(cval);
+        entry.valLoss = vl;
+        entry.chosen  = chosen;
+        searchLog(end+1) = entry; %#ok<SAGROW>
+    end
+
+    searchOpts.(param) = bestCandidate;
+    fprintf('  → Best %s = %s  (val_loss = %.4f)\n', ...
+            param, mat2str(bestCandidate), bestLoss);
+end
+
+% Apply best values to TRAIN_OPTS for the full training runs below
+fprintf('\n=== Search complete — updating TRAIN_OPTS ===\n');
+for pi = 1:size(SEARCH_PARAMS, 1)
+    param = SEARCH_PARAMS{pi, 1};
+    TRAIN_OPTS.(param) = searchOpts.(param);
+    fprintf('  %-16s = %s\n', param, mat2str(TRAIN_OPTS.(param)));
+end
 
 %% ── 5. Train hybrid Frangi-UNet ──────────────────────────────────────────
 fprintf('\n=== [1/2] Training hybrid Frangi-UNet ===\n');
