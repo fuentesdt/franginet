@@ -66,7 +66,8 @@ base_opts = struct( ...
     'batchSize',          2, ...
     'l2',                 1e-4, ...
     'valFraction',        0.2, ...
-    'plots',              'none' ...
+    'plots',              'none', ...
+    'numFrangiChannels',  1 ...
 );
 
 %% ── 3. Train hybrid Frangi-UNet ─────────────────────────────────────────
@@ -88,15 +89,14 @@ fprintf('\n=== Learned 3-D Frangi parameters ===\n');
 layerIdx = find(strcmp({net_hybrid.Layers.Name}, 'frangi'), 1);
 if ~isempty(layerIdx)
     fl = net_hybrid.Layers(layerIdx);
-    learned_sigmas = exp(double(fl.logSigmas(:)));
-    learned_alpha  = exp(double(fl.logAlpha));
-    learned_beta   = exp(double(fl.logBeta));
-    learned_c      = exp(double(fl.logC));
-
-    fprintf('  Learned sigmas : '); fprintf('%.3f  ', learned_sigmas); fprintf('\n');
-    fprintf('  Learned alpha  : %.4f  (plate/tube discrimination)\n', learned_alpha);
-    fprintf('  Learned beta   : %.4f  (blob suppression)\n',          learned_beta);
-    fprintf('  Learned c      : %.2f  (background suppression)\n',    learned_c);
+    for ch = 1:fl.NumChannels
+        fprintf('  [ch %d] sigmas: ', ch);
+        fprintf('%.3f  ', exp(double(fl.logSigmas(ch,:)))); fprintf('\n');
+        fprintf('         alpha=%.4f  beta=%.4f  c=%.2f\n', ...
+            exp(double(fl.logAlpha(ch))), ...
+            exp(double(fl.logBeta(ch))), ...
+            exp(double(fl.logC(ch))));
+    end
 end
 
 %% ── 6. Evaluate both models ─────────────────────────────────────────────

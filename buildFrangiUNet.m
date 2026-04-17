@@ -36,19 +36,21 @@ function lgraph = buildFrangiUNet(opts)
     useFrangi = ~isfield(opts,'useFrangi') || opts.useFrangi;
 
     if useFrangi
-        layers{end+1} = learnableFrangiLayer(opts.numScales, ...
+        nFrangiCh = opts.numFrangiChannels;
+        layers{end+1} = learnableFrangiLayer(nFrangiCh, ...
+                                             opts.numScales, ...
                                              opts.sigmaMin, ...
                                              opts.sigmaMax, ...
                                              'Name','frangi');
         connect{end+1} = {'input','frangi'};
 
-        % Concatenate raw + vesselness along channel dim 4: [H W D C B]
+        % Concatenate raw (1ch) + frangi (nFrangiCh) along channel dim 4
         layers{end+1} = concatenationLayer(4, 2, 'Name','cat_input');
         connect{end+1} = {'input',  'cat_input/in1'};
         connect{end+1} = {'frangi', 'cat_input/in2'};
 
         prevName = 'cat_input';
-        inCh     = 2;   % raw (1ch) + frangi (1ch)
+        inCh     = 1 + nFrangiCh;
     else
         % Plain U-Net: raw input feeds directly into the encoder
         prevName = 'input';
