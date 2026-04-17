@@ -72,7 +72,6 @@ function opts = defaultOpts(opts)
         'patchSize',          [64 64 64], ...  % 3-D patch extracted per sample [H W D]
         'patchesPerVolume',   8, ...            % independent patches per volume per epoch
         'foregroundFraction', 0.8, ...          % probability a patch is fg-centred
-        'numScales',          4, ...            % Frangi scale levels
         'sigmaMin',           1.0, ...          % minimum Gaussian sigma (voxels)
         'sigmaMax',           4.0, ...          % maximum Gaussian sigma (voxels)
         'encoderDepth',       3, ...            % U-Net encoder depth (2^depth <= min patch dim)

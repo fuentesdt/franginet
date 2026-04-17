@@ -37,20 +37,25 @@ function lgraph = buildFrangiUNet(opts)
 
     if useFrangi
         nFrangiCh = opts.numFrangiChannels;
+
+        % Per-channel single-scale Frangi → [H W D nFrangiCh B]
         layers{end+1} = learnableFrangiLayer(nFrangiCh, ...
-                                             opts.numScales, ...
                                              opts.sigmaMin, ...
                                              opts.sigmaMax, ...
                                              'Name','frangi');
-        connect{end+1} = {'input','frangi'};
+        connect{end+1} = {'input', 'frangi'};
 
-        % Concatenate raw (1ch) + frangi (nFrangiCh) along channel dim 4
+        % Softmax-weighted pooling → [H W D 1 B]
+        layers{end+1} = frangiSoftmaxPoolingLayer(nFrangiCh, 'Name','frangi_pool');
+        connect{end+1} = {'frangi', 'frangi_pool'};
+
+        % Concatenate raw (1ch) + pooled frangi (1ch) along channel dim 4
         layers{end+1} = concatenationLayer(4, 2, 'Name','cat_input');
-        connect{end+1} = {'input',  'cat_input/in1'};
-        connect{end+1} = {'frangi', 'cat_input/in2'};
+        connect{end+1} = {'input',       'cat_input/in1'};
+        connect{end+1} = {'frangi_pool', 'cat_input/in2'};
 
         prevName = 'cat_input';
-        inCh     = 1 + nFrangiCh;
+        inCh     = 2;
     else
         % Plain U-Net: raw input feeds directly into the encoder
         prevName = 'input';
