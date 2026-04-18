@@ -93,8 +93,9 @@ end
 nModels = size(models, 1);
 assert(nModels > 0, 'RUN_MODELS did not match any known archMode.');
 
-nets  = cell(nModels, 1);
-infos = cell(nModels, 1);
+nets      = cell(nModels, 1);
+infos     = cell(nModels, 1);
+nets_init = cell(nModels, 1);   % untrained snapshots (only set for frangi_threshold)
 
 for m = 1:nModels
     fprintf('\n=== [%d/%d] Training: %s ===\n', m, nModels, models{m,1});
@@ -103,6 +104,17 @@ for m = 1:nModels
     extra = models{m,2};
     flds  = fieldnames(extra);
     for f = 1:numel(flds), mopts.(flds{f}) = extra.(flds{f}); end
+
+    % For frangi_threshold: assemble the untrained network before any weight
+    % updates so we can evaluate the raw initialised Frangi+threshold response.
+    if strcmp(mopts.archMode, 'frangi_threshold')
+        initOpts          = mopts;
+        initOpts.imgSize  = mopts.patchSize;
+        lgraph_init    = buildFrangiUNet(initOpts);
+        nets_init{m}   = assembleNetwork(lgraph_init);
+        fprintf('  (untrained network assembled for baseline evaluation)\n');
+    end
+
     [nets{m}, infos{m}] = trainFrangiUNet(imgDir, labelDir, mopts);
 end
 
@@ -131,18 +143,25 @@ for m = frangiIdx
     end
 end
 
-%% ── 5. Evaluate all trained models ──────────────────────────────────────
+%% ── 5. Evaluate all trained models (+ untrained baselines) ──────────────
 fprintf('\n=== Evaluating %d model(s) ===\n', nModels);
 
 evalOpts.patchSize    = base_opts.patchSize;
 evalOpts.patchOverlap = base_opts.patchOverlap;
 evalOpts.threshold    = 0.5;   % all archs output sigmoid probabilities
 
-results = cell(nModels, 1);
+results      = cell(nModels, 1);
+results_init = cell(nModels, 1);   % non-empty only where nets_init is set
+
 for m = 1:nModels
-    evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', ...
-                               sprintf('preds_%s', models{m,2}.archMode));
+    am = models{m,2}.archMode;
+    evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', sprintf('preds_%s', am));
     results{m} = evaluateFrangiUNet(nets{m}, imgDir, labelDir, evalOpts);
+
+    if ~isempty(nets_init{m})
+        evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', sprintf('preds_%s_init', am));
+        results_init{m} = evaluateFrangiUNet(nets_init{m}, imgDir, labelDir, evalOpts);
+    end
 end
 
 %% ── 6. Accuracy comparison table ────────────────────────────────────────
@@ -152,6 +171,12 @@ fprintf('╔══════════════════════�
 fprintf('║ Model                        ║   Dice   ║  clDice  ║   AUC    ║\n');
 fprintf('╠══════════════════════════════╬══════════╬══════════╬══════════╣\n');
 for m = 1:nModels
+    % Print untrained baseline row immediately before the trained row
+    if ~isempty(results_init{m})
+        fprintf('║ %-28s ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
+            [models{m,1} ' (init)'], ...
+            results_init{m}.meanDice, results_init{m}.meanClDice, results_init{m}.meanAUC);
+    end
     fprintf('║ %-28s ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
         models{m,1}, results{m}.meanDice, results{m}.meanClDice, results{m}.meanAUC);
     if ~isempty(unetBoundary) && m == unetBoundary
@@ -169,14 +194,27 @@ rng(0);
 vizOpts.patchSize    = base_opts.patchSize;
 vizOpts.patchOverlap = base_opts.patchOverlap;
 
-probs = cell(nModels, 1);
+probs      = cell(nModels, 1);
+probs_init = cell(nModels, 1);
 for m = 1:nModels
     probs{m} = predictVolume(nets{m}, vol_t, vizOpts);
+    if ~isempty(nets_init{m})
+        probs_init{m} = predictVolume(nets_init{m}, vol_t, vizOpts);
+    end
 end
 
-% Axial MIP strip — all trained models
-cols  = [{'Input', 'GT mask'}, models(:,1)'];
-vdata = [{vol_t, mask_t}, probs'];
+% Axial MIP strip — trained models, with init column inserted before each
+% model that has an untrained baseline
+cols  = {'Input', 'GT mask'};
+vdata = {vol_t, mask_t};
+for m = 1:nModels
+    if ~isempty(probs_init{m})
+        cols{end+1}  = [models{m,1} ' (init)'];   %#ok<SAGROW>
+        vdata{end+1} = probs_init{m};              %#ok<SAGROW>
+    end
+    cols{end+1}  = models{m,1};   %#ok<SAGROW>
+    vdata{end+1} = probs{m};      %#ok<SAGROW>
+end
 nC    = numel(cols);
 figure('Name','All trained models — axial MIP','Color','w');
 for c = 1:nC
