@@ -31,6 +31,8 @@ function results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
     if ~isfield(opts,'threshold'),    opts.threshold    = 0.5;        end
     if ~isfield(opts,'outDir'),       opts.outDir       = './predictions'; end
 
+    hasFrangi = any(strcmp({net.Layers.Name}, 'frangi'));
+
     if ~exist(opts.outDir,'dir'), mkdir(opts.outDir); end
 
     imgFiles   = [dir(fullfile(imgDir,   '*.nii')); ...
@@ -75,6 +77,11 @@ function results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
         fname = regexprep(fname, '\.nii$', '');   % strip leftover .nii from .nii.gz
         niftiwrite(single(prob), fullfile(opts.outDir, [fname '_prob.nii']));
         niftiwrite(uint8(pred),  fullfile(opts.outDir, [fname '_mask.nii']));
+
+        if hasFrangi
+            frangiVol = extractFrangiVolume(net, vol, opts);
+            niftiwrite(single(frangiVol), fullfile(opts.outDir, [fname '_frangi.nii']));
+        end
 
         fprintf('          Dice=%.3f  clDice=%.3f  AUC=%.3f\n', ...
                  dice_v(i), clDice_v(i), auc_v(i));
@@ -126,4 +133,90 @@ end
 function auc = computeAUC(scores, labels)
 % COMPUTEAUC  Trapezoidal AUC-ROC.
     [~,~,~,auc] = perfcurve(labels, scores, 1);
+end
+
+% =========================================================================
+% FRANGI ACTIVATION EXTRACTION
+% =========================================================================
+
+function frangiVol = extractFrangiVolume(net, vol, opts)
+% Sliding-window extraction of 'frangi' layer activations via activations().
+% Uses the same Gaussian-blended patch tiling as predictVolume.
+% Output is [H W D] if the frangi layer has 1 output channel, or [H W D nC]
+% if it has nC > 1 (frangi_multichannel / ReduceMax=false).
+
+    pSz    = opts.patchSize(:)';
+    border = opts.patchOverlap(:)';
+    stride = pSz - 2*border;
+
+    origSz = size(vol, [1 2 3]);
+
+    % Pad to cover last patch boundary exactly (same logic as predictVolume)
+    padSz = zeros(1,3);
+    for d = 1:3
+        if origSz(d) <= pSz(d)
+            padSz(d) = pSz(d);
+        else
+            nSteps   = ceil((origSz(d) - pSz(d)) / stride(d));
+            padSz(d) = pSz(d) + nSteps * stride(d);
+        end
+    end
+    padNeeded = padSz - origSz;
+    if any(padNeeded > 0)
+        vol = padarray(vol, padNeeded, 0, 'post');
+    end
+
+    % Probe one patch to determine the number of Frangi output channels
+    probe   = reshape(im2single(vol(1:pSz(1), 1:pSz(2), 1:pSz(3))), [pSz 1]);
+    actProbe = activations(net, probe, 'frangi');
+    nC      = size(actProbe, 4);   % 1 when ReduceMax=true, numFrangiChannels otherwise
+
+    actAcc  = zeros([padSz nC], 'single');
+    wsumAcc = zeros(padSz,      'single');
+    W       = gaussianWindow3D_local(pSz);
+
+    starts1 = 1 : stride(1) : padSz(1)-pSz(1)+1;
+    starts2 = 1 : stride(2) : padSz(2)-pSz(2)+1;
+    starts3 = 1 : stride(3) : padSz(3)-pSz(3)+1;
+
+    for i1 = starts1
+        for i2 = starts2
+            for i3 = starts3
+                e1 = i1+pSz(1)-1;  e2 = i2+pSz(2)-1;  e3 = i3+pSz(3)-1;
+
+                patch = vol(i1:e1, i2:e2, i3:e3);
+                X     = reshape(im2single(patch), [pSz 1]);
+                act   = single(squeeze(activations(net, X, 'frangi')));  % [H W D (nC)]
+
+                if nC == 1
+                    act = reshape(act, [pSz 1]);
+                end
+
+                for c = 1:nC
+                    actAcc(i1:e1, i2:e2, i3:e3, c) = ...
+                        actAcc(i1:e1, i2:e2, i3:e3, c) + act(:,:,:,c) .* W;
+                end
+                wsumAcc(i1:e1, i2:e2, i3:e3) = wsumAcc(i1:e1, i2:e2, i3:e3) + W;
+            end
+        end
+    end
+
+    wsum4     = repmat(max(wsumAcc, 1e-6), [1 1 1 nC]);
+    frangiVol = actAcc ./ wsum4;
+    frangiVol = frangiVol(1:origSz(1), 1:origSz(2), 1:origSz(3), :);
+
+    if nC == 1
+        frangiVol = squeeze(frangiVol);   % [H W D]
+    end
+end
+
+% -------------------------------------------------------------------------
+function W = gaussianWindow3D_local(sz)
+    ax = cell(3,1);
+    for d = 1:3
+        t     = linspace(-1, 1, sz(d));
+        ax{d} = exp(-2 * t.^2);
+    end
+    [A, B, C] = ndgrid(ax{1}, ax{2}, ax{3});
+    W = single(A .* B .* C);
 end
