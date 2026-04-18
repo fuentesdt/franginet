@@ -24,11 +24,14 @@ classdef learnableFrangiLayer < nnet.layer.Layer & nnet.layer.Formattable
 
     properties
         NumChannels
+        ReduceMax   % logical — true: pixelwise max across channels (1-ch output)
+                    %           false: return all channels ([H W D nC B])
     end
 
     methods
         function layer = learnableFrangiLayer(numChannels, sigmaMin, sigmaMax, varargin)
             layer.NumChannels = numChannels;
+            layer.ReduceMax   = true;
             layer.Name        = 'frangi';
             layer.Description = 'Learnable 3-D single-scale-per-channel Frangi vesselness';
 
@@ -43,6 +46,8 @@ classdef learnableFrangiLayer < nnet.layer.Layer & nnet.layer.Formattable
             for k = 1:2:numel(varargin)
                 if strcmpi(varargin{k},'Name')
                     layer.Name = varargin{k+1};
+                elseif strcmpi(varargin{k},'ReduceMax')
+                    layer.ReduceMax = varargin{k+1};
                 end
             end
         end
@@ -74,14 +79,23 @@ classdef learnableFrangiLayer < nnet.layer.Layer & nnet.layer.Formattable
                 channels{ch} = frangiScaleResponse3D(X5, sig, alpha, beta, c);
             end
 
-            % Pixelwise max across channels — gradients flow to the winning channel
-            Z_all   = cat(4, channels{:});                    % [H W D nC B]
-            Z_raw   = max(stripdims(Z_all), [], 4);           % [H W D 1  B]
+            Z_all = cat(4, channels{:});   % [H W D nC B]
 
-            if has_batch
-                Z = dlarray(Z_raw, 'SSSCB');
+            if layer.ReduceMax
+                % Pixelwise max — gradients flow to the winning channel
+                Z_raw = max(stripdims(Z_all), [], 4);   % [H W D 1 B]
+                if has_batch
+                    Z = dlarray(Z_raw, 'SSSCB');
+                else
+                    Z = dlarray(reshape(Z_raw, H, W, D, 1), 'SSSC');
+                end
             else
-                Z = dlarray(reshape(Z_raw, H, W, D, 1), 'SSSC');
+                % Return all channels for downstream learned combination
+                if has_batch
+                    Z = Z_all;
+                else
+                    Z = dlarray(reshape(stripdims(Z_all), H, W, D, nC), 'SSSC');
+                end
             end
         end
     end

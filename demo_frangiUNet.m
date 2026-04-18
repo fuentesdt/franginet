@@ -69,25 +69,37 @@ base_opts = struct( ...
     'numFrangiChannels',  10 ...
 );
 
-%% ── 3. Train hybrid Frangi-UNet ─────────────────────────────────────────
-fprintf('\n=== [1/2] Training hybrid Frangi-UNet ===\n');
-rng(42);   % same initialisation for fair comparison
-opts_hybrid           = base_opts;
-opts_hybrid.useFrangi = true;
-[net_hybrid, info_hybrid] = trainFrangiUNet(imgDir, labelDir, opts_hybrid);
+%% ── 3. Train all five architectures ─────────────────────────────────────
+% Each model uses the same opts, seed, and data split for a fair comparison.
 
-%% ── 4. Train plain U-Net (control) ─────────────────────────────────────
-fprintf('\n=== [2/2] Training plain U-Net (control) ===\n');
-rng(42);
-opts_plain           = base_opts;
-opts_plain.useFrangi = false;
-[net_plain, info_plain] = trainFrangiUNet(imgDir, labelDir, opts_plain);
+models = {
+    'Plain U-Net',              struct('archMode','unet'); ...
+    'Hybrid Frangi-UNet',       struct('archMode','frangi_unet'); ...
+    'Frangi threshold',         struct('archMode','frangi_threshold'); ...
+    'Frangi + linear (1×1×1)',  struct('archMode','frangi_linear'); ...
+    'Frangi multichannel',      struct('archMode','frangi_multichannel'); ...
+};
+nModels = size(models, 1);
 
-%% ── 5. Inspect learned Frangi parameters (hybrid only) ─────────────────
-fprintf('\n=== Learned 3-D Frangi parameters ===\n');
-layerIdx = find(strcmp({net_hybrid.Layers.Name}, 'frangi'), 1);
+nets  = cell(nModels, 1);
+infos = cell(nModels, 1);
+
+for m = 1:nModels
+    fprintf('\n=== [%d/%d] Training: %s ===\n', m, nModels, models{m,1});
+    rng(42);
+    mopts = base_opts;
+    extra = models{m,2};
+    flds  = fieldnames(extra);
+    for f = 1:numel(flds), mopts.(flds{f}) = extra.(flds{f}); end
+    [nets{m}, infos{m}] = trainFrangiUNet(imgDir, labelDir, mopts);
+end
+
+%% ── 4. Inspect learned Frangi parameters (Hybrid Frangi-UNet) ───────────
+fprintf('\n=== Learned 3-D Frangi parameters (Hybrid Frangi-UNet) ===\n');
+hybridIdx = 2;   % row index in models cell
+layerIdx  = find(strcmp({nets{hybridIdx}.Layers.Name}, 'frangi'), 1);
 if ~isempty(layerIdx)
-    fl = net_hybrid.Layers(layerIdx);
+    fl = nets{hybridIdx}.Layers(layerIdx);
     for ch = 1:fl.NumChannels
         fprintf('  [ch %d] sigma=%.3f  alpha=%.4f  beta=%.4f  c=%.2f\n', ch, ...
             exp(double(fl.logSigmas(ch))), ...
@@ -97,71 +109,92 @@ if ~isempty(layerIdx)
     end
 end
 
-%% ── 6. Evaluate both models ─────────────────────────────────────────────
-fprintf('\n=== Evaluating both models ===\n');
+%% ── 5. Evaluate all models ───────────────────────────────────────────────
+fprintf('\n=== Evaluating all %d models ===\n', nModels);
 
 evalOpts.patchSize    = base_opts.patchSize;
 evalOpts.patchOverlap = base_opts.patchOverlap;
 evalOpts.threshold    = 0.5;
 
-evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', 'preds_hybrid');
-results_hybrid  = evaluateFrangiUNet(net_hybrid, imgDir, labelDir, evalOpts);
+results = cell(nModels, 1);
+for m = 1:nModels
+    evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', sprintf('preds_%d', m));
+    results{m} = evaluateFrangiUNet(nets{m}, imgDir, labelDir, evalOpts);
+end
 
-evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', 'preds_plain');
-results_plain   = evaluateFrangiUNet(net_plain,  imgDir, labelDir, evalOpts);
-
-%% ── 7. Accuracy comparison table ────────────────────────────────────────
+%% ── 6. Accuracy comparison table ────────────────────────────────────────
 fprintf('\n');
-fprintf('╔══════════════════════╦══════════╦══════════╦══════════╗\n');
-fprintf('║ Model                ║   Dice   ║  clDice  ║   AUC    ║\n');
-fprintf('╠══════════════════════╬══════════╬══════════╬══════════╣\n');
-fprintf('║ Hybrid Frangi-UNet   ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
-        results_hybrid.meanDice, results_hybrid.meanClDice, results_hybrid.meanAUC);
-fprintf('║ Plain U-Net          ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
-        results_plain.meanDice,  results_plain.meanClDice,  results_plain.meanAUC);
-fprintf('╠══════════════════════╬══════════╬══════════╬══════════╣\n');
-fprintf('║ Δ (hybrid − plain)   ║ %+8.4f ║ %+8.4f ║ %+8.4f ║\n', ...
-        results_hybrid.meanDice  - results_plain.meanDice, ...
-        results_hybrid.meanClDice - results_plain.meanClDice, ...
-        results_hybrid.meanAUC   - results_plain.meanAUC);
-fprintf('╚══════════════════════╩══════════╩══════════╩══════════╝\n');
+fprintf('╔══════════════════════════════╦══════════╦══════════╦══════════╗\n');
+fprintf('║ Model                        ║   Dice   ║  clDice  ║   AUC    ║\n');
+fprintf('╠══════════════════════════════╬══════════╬══════════╬══════════╣\n');
+for m = 1:nModels
+    fprintf('║ %-28s ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
+        models{m,1}, results{m}.meanDice, results{m}.meanClDice, results{m}.meanAUC);
+    if m == 2   % separator after U-Net models
+        fprintf('╠══════════════════════════════╬══════════╬══════════╬══════════╣\n');
+    end
+end
+fprintf('╚══════════════════════════════╩══════════╩══════════╩══════════╝\n');
 
-%% ── 8. Side-by-side MIP predictions ────────────────────────────────────
-fprintf('\n=== Visualising side-by-side predictions ===\n');
+%% ── 7. MIP visualisation — probability maps for all models ──────────────
+fprintf('\n=== Visualising probability maps for all models ===\n');
 
 rng(0);
 [vol_t, mask_t] = syntheticVesselVolume(VOL_SIZE);
 
-% Sliding-window inference on the full test volume (patchSize may differ from VOL_SIZE)
 vizOpts.patchSize    = base_opts.patchSize;
 vizOpts.patchOverlap = base_opts.patchOverlap;
-prob_hybrid = predictVolume(net_hybrid, vol_t, vizOpts);
-prob_plain  = predictVolume(net_plain,  vol_t, vizOpts);
-pred_hybrid = prob_hybrid >= 0.5;
-pred_plain  = prob_plain  >= 0.5;
 
-cols   = {'Input', 'GT mask', 'Hybrid prob', 'Hybrid mask', 'Plain prob', 'Plain mask'};
-vols   = {vol_t, mask_t, prob_hybrid, pred_hybrid, prob_plain, pred_plain};
-nCols  = numel(cols);
-
-figure('Name','Model comparison — axial / coronal / sagittal MIPs','Color','w');
-for c = 1:nCols
-    v = vols{c};
-    subplot(3, nCols, c);          imshow(squeeze(max(v,[],3)),[]); title([cols{c} ' (ax)']);
-    subplot(3, nCols, c + nCols);  imshow(squeeze(max(v,[],2)),[]); title([cols{c} ' (cor)']);
-    subplot(3, nCols, c + 2*nCols);imshow(squeeze(max(v,[],1)),[]); title([cols{c} ' (sag)']);
+probs = cell(nModels, 1);
+for m = 1:nModels
+    probs{m} = predictVolume(nets{m}, vol_t, vizOpts);
 end
 
-%% ── 9. Training-loss curves (both models) ──────────────────────────────
-figure('Name','Training curves — hybrid vs plain','Color','w');
-semilogy(info_hybrid.TrainingLoss,   'b-',  'LineWidth',1.5); hold on;
-semilogy(info_plain.TrainingLoss,    'r-',  'LineWidth',1.5);
-semilogy(info_hybrid.ValidationLoss, 'b--', 'LineWidth',1.5);
-semilogy(info_plain.ValidationLoss,  'r--', 'LineWidth',1.5);
-xlabel('Iteration'); ylabel('Loss (Dice + BCE, log scale)');
-legend('Hybrid train','Plain train','Hybrid val','Plain val', 'Location','northeast');
-grid on;
-title('Hybrid Frangi-UNet vs Plain U-Net — Training Loss');
+cols  = [{'Input', 'GT mask'}, models(:,1)'];
+vdata = [{vol_t, mask_t}, probs'];
+nC    = numel(cols);
+
+figure('Name','All models — axial MIP probability maps','Color','w');
+for c = 1:nC
+    subplot(1, nC, c);
+    imshow(squeeze(max(vdata{c}, [], 3)), []);
+    title(cols{c}, 'Interpreter','none', 'FontSize',7);
+end
+sgtitle('Axial MIP — vesselness probability');
+
+figure('Name','U-Net models — full MIP comparison','Color','w');
+unetCols  = {'Input','GT mask','Hybrid Frangi-UNet','Plain U-Net'};
+unetVdata = {vol_t, mask_t, probs{2}, probs{1}};
+for c = 1:4
+    v = unetVdata{c};
+    subplot(3,4,c);      imshow(squeeze(max(v,[],3)),[]); title([unetCols{c} ' (ax)']);
+    subplot(3,4,c+4);    imshow(squeeze(max(v,[],2)),[]); title([unetCols{c} ' (cor)']);
+    subplot(3,4,c+8);    imshow(squeeze(max(v,[],1)),[]); title([unetCols{c} ' (sag)']);
+end
+
+%% ── 8. Training-loss curves ──────────────────────────────────────────────
+colors = lines(nModels);
+styles = {'-','--'};
+
+figure('Name','Training loss — all models','Color','w');
+subplot(1,2,1); hold on;
+subplot(1,2,2); hold on;
+
+for m = 1:nModels
+    tl = infos{m}.TrainingLoss;
+    vl = infos{m}.ValidationLoss(~isnan(infos{m}.ValidationLoss));
+    subplot(1,2,1);
+    semilogy(tl, 'Color',colors(m,:), 'LineStyle',styles{1}, 'LineWidth',1.5, ...
+             'DisplayName', models{m,1});
+    subplot(1,2,2);
+    semilogy(vl, 'Color',colors(m,:), 'LineStyle',styles{1}, 'LineWidth',1.5, ...
+             'DisplayName', models{m,1});
+end
+
+subplot(1,2,1);
+xlabel('Iteration'); ylabel('Loss'); title('Training loss'); grid on; legend('Location','northeast');
+subplot(1,2,2);
+xlabel('Validation check'); ylabel('Loss'); title('Validation loss'); grid on; legend('Location','northeast');
 
 fprintf('\nDemo complete.\n');
 
