@@ -69,17 +69,29 @@ base_opts = struct( ...
     'numFrangiChannels',  10 ...
 );
 
-%% ── 3. Train all five architectures ─────────────────────────────────────
-% Each model uses the same opts, seed, and data split for a fair comparison.
+%% ── 3. Train selected architectures ─────────────────────────────────────
+% To run a subset, set RUN_MODELS to a cell array of archMode strings, e.g.:
+%   RUN_MODELS = {'frangi_threshold'};
+%   RUN_MODELS = {'unet', 'frangi_unet'};
+% Leave empty to run all five.
+RUN_MODELS = {};   % <── edit here to select a subset
 
-models = {
+ALL_MODELS = {
     'Plain U-Net',              struct('archMode','unet'); ...
     'Hybrid Frangi-UNet',       struct('archMode','frangi_unet'); ...
     'Frangi threshold',         struct('archMode','frangi_threshold'); ...
     'Frangi + linear (1×1×1)',  struct('archMode','frangi_linear'); ...
     'Frangi multichannel',      struct('archMode','frangi_multichannel'); ...
 };
+
+if isempty(RUN_MODELS)
+    models = ALL_MODELS;
+else
+    keep = cellfun(@(s) ismember(s.archMode, RUN_MODELS), ALL_MODELS(:,2));
+    models = ALL_MODELS(keep, :);
+end
 nModels = size(models, 1);
+assert(nModels > 0, 'RUN_MODELS did not match any known archMode.');
 
 nets  = cell(nModels, 1);
 infos = cell(nModels, 1);
@@ -94,12 +106,15 @@ for m = 1:nModels
     [nets{m}, infos{m}] = trainFrangiUNet(imgDir, labelDir, mopts);
 end
 
-%% ── 4. Inspect learned Frangi parameters (Hybrid Frangi-UNet) ───────────
-fprintf('\n=== Learned 3-D Frangi parameters (Hybrid Frangi-UNet) ===\n');
-hybridIdx = 2;   % row index in models cell
-layerIdx  = find(strcmp({nets{hybridIdx}.Layers.Name}, 'frangi'), 1);
-if ~isempty(layerIdx)
-    fl = nets{hybridIdx}.Layers(layerIdx);
+%% ── 4. Inspect learned Frangi parameters (any Frangi model that was run) ─
+fprintf('\n=== Learned 3-D Frangi parameters ===\n');
+frangiArchs = {'frangi_unet','frangi_threshold','frangi_linear','frangi_multichannel'};
+frangiIdx   = findModel(models, frangiArchs);
+for m = frangiIdx
+    layerIdx = find(strcmp({nets{m}.Layers.Name}, 'frangi'), 1);
+    if isempty(layerIdx), continue; end
+    fprintf('  -- %s --\n', models{m,1});
+    fl = nets{m}.Layers(layerIdx);
     for ch = 1:fl.NumChannels
         fprintf('  [ch %d] sigma=%.3f  alpha=%.4f  beta=%.4f  c=%.2f\n', ch, ...
             exp(double(fl.logSigmas(ch))), ...
@@ -107,10 +122,17 @@ if ~isempty(layerIdx)
             exp(double(fl.logBeta(ch))), ...
             exp(double(fl.logC(ch))));
     end
+    % Show scaled_sigmoid params if present
+    ssIdx = find(strcmp({nets{m}.Layers.Name}, 'scaled_sigmoid'), 1);
+    if ~isempty(ssIdx)
+        sl = nets{m}.Layers(ssIdx);
+        fprintf('  scaled_sigmoid: scale=%.4f  bias=%.4f\n', ...
+            double(sl.scale), double(sl.bias));
+    end
 end
 
-%% ── 5. Evaluate all models ───────────────────────────────────────────────
-fprintf('\n=== Evaluating all %d models ===\n', nModels);
+%% ── 5. Evaluate all trained models ──────────────────────────────────────
+fprintf('\n=== Evaluating %d model(s) ===\n', nModels);
 
 evalOpts.patchSize    = base_opts.patchSize;
 evalOpts.patchOverlap = base_opts.patchOverlap;
@@ -118,11 +140,13 @@ evalOpts.threshold    = 0.5;
 
 results = cell(nModels, 1);
 for m = 1:nModels
-    evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', sprintf('preds_%d', m));
+    evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', ...
+                               sprintf('preds_%s', models{m,2}.archMode));
     results{m} = evaluateFrangiUNet(nets{m}, imgDir, labelDir, evalOpts);
 end
 
 %% ── 6. Accuracy comparison table ────────────────────────────────────────
+unetBoundary = findModel(models, {'frangi_unet'});   % separator row index
 fprintf('\n');
 fprintf('╔══════════════════════════════╦══════════╦══════════╦══════════╗\n');
 fprintf('║ Model                        ║   Dice   ║  clDice  ║   AUC    ║\n');
@@ -130,14 +154,14 @@ fprintf('╠══════════════════════�
 for m = 1:nModels
     fprintf('║ %-28s ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
         models{m,1}, results{m}.meanDice, results{m}.meanClDice, results{m}.meanAUC);
-    if m == 2   % separator after U-Net models
+    if ~isempty(unetBoundary) && m == unetBoundary
         fprintf('╠══════════════════════════════╬══════════╬══════════╬══════════╣\n');
     end
 end
 fprintf('╚══════════════════════════════╩══════════╩══════════╩══════════╝\n');
 
-%% ── 7. MIP visualisation — probability maps for all models ──────────────
-fprintf('\n=== Visualising probability maps for all models ===\n');
+%% ── 7. MIP visualisation ─────────────────────────────────────────────────
+fprintf('\n=== Visualising probability maps ===\n');
 
 rng(0);
 [vol_t, mask_t] = syntheticVesselVolume(VOL_SIZE);
@@ -150,11 +174,11 @@ for m = 1:nModels
     probs{m} = predictVolume(nets{m}, vol_t, vizOpts);
 end
 
+% Axial MIP strip — all trained models
 cols  = [{'Input', 'GT mask'}, models(:,1)'];
 vdata = [{vol_t, mask_t}, probs'];
 nC    = numel(cols);
-
-figure('Name','All models — axial MIP probability maps','Color','w');
+figure('Name','All trained models — axial MIP','Color','w');
 for c = 1:nC
     subplot(1, nC, c);
     imshow(squeeze(max(vdata{c}, [], 3)), []);
@@ -162,14 +186,19 @@ for c = 1:nC
 end
 sgtitle('Axial MIP — vesselness probability');
 
-figure('Name','U-Net models — full MIP comparison','Color','w');
-unetCols  = {'Input','GT mask','Hybrid Frangi-UNet','Plain U-Net'};
-unetVdata = {vol_t, mask_t, probs{2}, probs{1}};
-for c = 1:4
-    v = unetVdata{c};
-    subplot(3,4,c);      imshow(squeeze(max(v,[],3)),[]); title([unetCols{c} ' (ax)']);
-    subplot(3,4,c+4);    imshow(squeeze(max(v,[],2)),[]); title([unetCols{c} ' (cor)']);
-    subplot(3,4,c+8);    imshow(squeeze(max(v,[],1)),[]); title([unetCols{c} ' (sag)']);
+% Full ax/cor/sag figure — only if both U-Net models were trained
+hiIdx   = findModel(models, {'frangi_unet'});
+plainIdx = findModel(models, {'unet'});
+if ~isempty(hiIdx) && ~isempty(plainIdx)
+    figure('Name','U-Net models — full MIP comparison','Color','w');
+    unetCols  = {'Input','GT mask','Hybrid Frangi-UNet','Plain U-Net'};
+    unetVdata = {vol_t, mask_t, probs{hiIdx}, probs{plainIdx}};
+    for c = 1:4
+        v = unetVdata{c};
+        subplot(3,4,c);   imshow(squeeze(max(v,[],3)),[]); title([unetCols{c} ' (ax)']);
+        subplot(3,4,c+4); imshow(squeeze(max(v,[],2)),[]); title([unetCols{c} ' (cor)']);
+        subplot(3,4,c+8); imshow(squeeze(max(v,[],1)),[]); title([unetCols{c} ' (sag)']);
+    end
 end
 
 %% ── 8. Training-loss curves ──────────────────────────────────────────────
@@ -199,7 +228,17 @@ xlabel('Validation check'); ylabel('Loss'); title('Validation loss'); grid on; l
 fprintf('\nDemo complete.\n');
 
 %% =========================================================================
-%% LOCAL HELPER: synthetic 3-D vessel volume generator
+%% LOCAL HELPERS
+%% =========================================================================
+
+function idx = findModel(models, archModes)
+% Return row indices in models whose archMode is in archModes (cell of strings).
+% Returns empty if none of the requested archs were trained.
+    if ischar(archModes), archModes = {archModes}; end
+    idx = find(cellfun(@(s) ismember(s.archMode, archModes), models(:,2)));
+end
+
+%% ── synthetic 3-D vessel volume generator ───────────────────────────────
 %% =========================================================================
 
 function [vol, mask] = syntheticVesselVolume(sz)
