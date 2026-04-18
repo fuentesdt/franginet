@@ -122,12 +122,12 @@ for m = frangiIdx
             exp(double(fl.logBeta(ch))), ...
             exp(double(fl.logC(ch))));
     end
-    % Show scaled_sigmoid params if present
-    ssIdx = find(strcmp({nets{m}.Layers.Name}, 'scaled_sigmoid'), 1);
-    if ~isempty(ssIdx)
-        sl = nets{m}.Layers(ssIdx);
-        fprintf('  scaled_sigmoid: scale=%.4f  bias=%.4f\n', ...
-            double(sl.scale), double(sl.bias));
+    % Show learnable threshold params if present
+    tIdx = find(strcmp({nets{m}.Layers.Name}, 'learnable_threshold'), 1);
+    if ~isempty(tIdx)
+        tl = nets{m}.Layers(tIdx);
+        fprintf('  learnable_threshold: threshold=%.4f  scale=%.2f\n', ...
+            double(tl.threshold), exp(double(tl.logScale)));
     end
 end
 
@@ -136,21 +136,12 @@ fprintf('\n=== Evaluating %d model(s) ===\n', nModels);
 
 evalOpts.patchSize    = base_opts.patchSize;
 evalOpts.patchOverlap = base_opts.patchOverlap;
-
-% frangi_threshold outputs raw vesselness in [0,1] — use 0.1 as its threshold.
-% All other architectures output sigmoid probabilities — use 0.5.
-thresholdByArch = struct('frangi_threshold', 0.1);
+evalOpts.threshold    = 0.5;   % all archs output sigmoid probabilities
 
 results = cell(nModels, 1);
 for m = 1:nModels
-    am = models{m,2}.archMode;
-    if isfield(thresholdByArch, am)
-        evalOpts.threshold = thresholdByArch.(am);
-    else
-        evalOpts.threshold = 0.5;
-    end
     evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', ...
-                               sprintf('preds_%s', am));
+                               sprintf('preds_%s', models{m,2}.archMode));
     results{m} = evaluateFrangiUNet(nets{m}, imgDir, labelDir, evalOpts);
 end
 

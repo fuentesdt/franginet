@@ -29,13 +29,17 @@ function lgraph = buildFrangiUNet(opts)
     % ── Frangi-only architectures (no U-Net) ─────────────────────────────
     switch archMode
         case 'frangi_threshold'
-            % Arch 2: Frangi(max) → loss directly.
-            % Vesselness is already in [0,1]; no sigmoid needed or wanted —
-            % any sigmoid with non-negative input sits at >= 0.5 everywhere.
+            % Arch 2: Frangi(max) → sigmoid(scale·(x−threshold)) → loss
+            % threshold and scale are both learnable; initialised at the
+            % known-good operating point so the optimizer refines rather
+            % than searches from scratch.
             layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
                                 opts.sigmaMax, 'ReduceMax',true, 'Name','frangi');
-            connect{end+1} = {'input',  'frangi'};
-            connect{end+1} = {'frangi', 'loss'};
+            layers{end+1} = learnableThresholdLayer(opts.frangiThreshold, ...
+                                'Name','learnable_threshold');
+            connect{end+1} = {'input',               'frangi'};
+            connect{end+1} = {'frangi',              'learnable_threshold'};
+            connect{end+1} = {'learnable_threshold', 'loss'};
 
         case 'frangi_linear'
             % Arch 3: Frangi(max) → 1×1×1 Conv → Sigmoid → loss
@@ -58,13 +62,12 @@ function lgraph = buildFrangiUNet(opts)
 
     if ismember(archMode, {'frangi_threshold','frangi_linear','frangi_multichannel'})
         layers{end+1} = dicePixelClassificationLayer('Name','loss');
-        if ~strcmp(archMode, 'frangi_threshold')
-            % frangi_linear / frangi_multichannel: conv_out → sigmoid → loss
+        if ismember(archMode, {'frangi_linear','frangi_multichannel'})
             layers{end+1} = sigmoidLayer('Name','sigmoid');
             connect{end+1} = {'conv_out', 'sigmoid'};
             connect{end+1} = {'sigmoid',  'loss'};
         end
-        % frangi_threshold: frangi → loss already connected in switch above
+        % frangi_threshold: learnable_threshold → loss wired in switch above
         lgraph = assembleDag(layers, connect);
         return
     end
