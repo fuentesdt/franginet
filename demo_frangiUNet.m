@@ -74,7 +74,7 @@ base_opts = struct( ...
 %   RUN_MODELS = {'frangi_threshold'};
 %   RUN_MODELS = {'unet', 'frangi_unet'};
 % Leave empty to run all five.
-RUN_MODELS = {};   % <── edit here to select a subset
+RUN_MODELS = {'frangi_threshold'};   % <── edit here to select a subset
 
 ALL_MODELS = {
     'Plain U-Net',              struct('archMode','unet'); ...

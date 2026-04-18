@@ -74,7 +74,7 @@ function opts = defaultOpts(opts)
         'foregroundFraction', 0.8, ...          % probability a patch is fg-centred
         'sigmaMin',           1.0, ...          % minimum Gaussian sigma (voxels)
         'sigmaMax',           4.0, ...          % maximum Gaussian sigma (voxels)
-        'frangiThreshold',    0.1, ...          % init value for learnableThresholdLayer
+        'frangiThreshold',    0.1e-6, ...          % init value for learnableThresholdLayer
         'encoderDepth',       3, ...            % U-Net encoder depth (2^depth <= min patch dim)
         'initFilters',        16, ...           % filters in first encoder block
         'lr',                 1e-3, ...
