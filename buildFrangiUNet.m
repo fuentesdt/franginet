@@ -29,13 +29,13 @@ function lgraph = buildFrangiUNet(opts)
     % ── Frangi-only architectures (no U-Net) ─────────────────────────────
     switch archMode
         case 'frangi_threshold'
-            % Arch 2: Frangi(max) → scaledSigmoid(scale·x + bias) → loss
+            % Arch 2: Frangi(max) → loss directly.
+            % Vesselness is already in [0,1]; no sigmoid needed or wanted —
+            % any sigmoid with non-negative input sits at >= 0.5 everywhere.
             layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
                                 opts.sigmaMax, 'ReduceMax',true, 'Name','frangi');
-            layers{end+1} = scaledSigmoidLayer('Name','scaled_sigmoid');
-            connect{end+1} = {'input',         'frangi'};
-            connect{end+1} = {'frangi',        'scaled_sigmoid'};
-            connect{end+1} = {'scaled_sigmoid','loss'};
+            connect{end+1} = {'input',  'frangi'};
+            connect{end+1} = {'frangi', 'loss'};
 
         case 'frangi_linear'
             % Arch 3: Frangi(max) → 1×1×1 Conv → Sigmoid → loss
@@ -57,14 +57,14 @@ function lgraph = buildFrangiUNet(opts)
     end
 
     if ismember(archMode, {'frangi_threshold','frangi_linear','frangi_multichannel'})
+        layers{end+1} = dicePixelClassificationLayer('Name','loss');
         if ~strcmp(archMode, 'frangi_threshold')
-            % frangi_threshold already wired scaled_sigmoid → loss above
+            % frangi_linear / frangi_multichannel: conv_out → sigmoid → loss
             layers{end+1} = sigmoidLayer('Name','sigmoid');
-            layers{end+1} = dicePixelClassificationLayer('Name','loss');
-            connect{end+1} = {'sigmoid','loss'};
-        else
-            layers{end+1} = dicePixelClassificationLayer('Name','loss');
+            connect{end+1} = {'conv_out', 'sigmoid'};
+            connect{end+1} = {'sigmoid',  'loss'};
         end
+        % frangi_threshold: frangi → loss already connected in switch above
         lgraph = assembleDag(layers, connect);
         return
     end

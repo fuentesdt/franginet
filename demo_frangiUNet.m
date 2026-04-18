@@ -136,12 +136,21 @@ fprintf('\n=== Evaluating %d model(s) ===\n', nModels);
 
 evalOpts.patchSize    = base_opts.patchSize;
 evalOpts.patchOverlap = base_opts.patchOverlap;
-evalOpts.threshold    = 0.5;
+
+% frangi_threshold outputs raw vesselness in [0,1] — use 0.1 as its threshold.
+% All other architectures output sigmoid probabilities — use 0.5.
+thresholdByArch = struct('frangi_threshold', 0.1);
 
 results = cell(nModels, 1);
 for m = 1:nModels
+    am = models{m,2}.archMode;
+    if isfield(thresholdByArch, am)
+        evalOpts.threshold = thresholdByArch.(am);
+    else
+        evalOpts.threshold = 0.5;
+    end
     evalOpts.outDir = fullfile(rootdir, 'frangi_demo3d', ...
-                               sprintf('preds_%s', models{m,2}.archMode));
+                               sprintf('preds_%s', am));
     results{m} = evaluateFrangiUNet(nets{m}, imgDir, labelDir, evalOpts);
 end
 
