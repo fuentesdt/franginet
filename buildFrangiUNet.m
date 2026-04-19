@@ -31,12 +31,15 @@ function lgraph = buildFrangiUNet(opts)
     % ── Frangi-only architectures (no U-Net) ─────────────────────────────
     switch archMode
         case 'frangi_threshold'
-            % Arch 2: Frangi(max) → loss
-            % Frangi output is already in [0,1]; no sigmoid needed.
+            % Arch 2: Frangi(max) → scaledSigmoid(scale·x − 0.5) → loss
+            % Frangi ∈ [0,1]; bias fixed at -0.5 so the decision boundary
+            % starts at x=0.5 (midpoint); only scale is learnable.
             layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
                                 opts.sigmaMax, 'ReduceMax',true, 'Name','frangi');
-            connect{end+1} = {'input',  'frangi'};
-            connect{end+1} = {'frangi', 'loss'};
+            layers{end+1} = scaledSigmoidLayer('Name','scaled_sigmoid');
+            connect{end+1} = {'input',          'frangi'};
+            connect{end+1} = {'frangi',         'scaled_sigmoid'};
+            connect{end+1} = {'scaled_sigmoid', 'loss'};
 
         case 'frangi_linear'
             % Arch 3: Frangi(max) → 1×1×1 Conv → Sigmoid → loss
@@ -64,7 +67,7 @@ function lgraph = buildFrangiUNet(opts)
             connect{end+1} = {'conv_out', 'sigmoid'};
             connect{end+1} = {'sigmoid',  'loss'};
         end
-        % frangi_threshold: frangi → loss wired in switch above
+        % frangi_threshold: frangi → scaled_sigmoid → loss wired in switch above
         lgraph = assembleDag(layers, connect);
         return
     end

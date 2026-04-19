@@ -1,30 +1,31 @@
 classdef scaledSigmoidLayer < nnet.layer.Layer & nnet.layer.Formattable
-% SCALEDSIGMOIDLAYER  Sigmoid with learnable affine pre-transform.
+% SCALEDSIGMOIDLAYER  Sigmoid with learnable scale and fixed bias.
 %
 %   Z = sigmoid(scale .* X + bias)
 %
 %   LEARNABLE PARAMETERS
 %   ────────────────────
-%   scale  – scalar multiplicative factor   (init 1.0,  unconstrained)
-%   bias   – scalar additive offset         (init -2.0, unconstrained)
+%   scale  – scalar sharpness (init 1.0); controls steepness of the gate
 %
-%   Initialising bias to -2 means sigmoid(-2) ≈ 0.12 at zero input, so the
-%   network starts with a high effective threshold and must learn to lower it
-%   only for voxels with strong Frangi response.  This avoids the degenerate
-%   all-positive output that occurs when bias = 0 and all Frangi values ≥ 0.
+%   FIXED PARAMETERS
+%   ────────────────
+%   bias   – fixed at -0.003; zero-crossing at X = 0.003 when scale=1,
+%            matching the known-good Frangi vesselness threshold.
 
     properties (Learnable)
-        scale   % scalar
-        bias    % scalar
+        scale   % scalar — learnable sharpness
+    end
+
+    properties
+        bias = single(-0.003)   % fixed offset; zero-crossing at x = 0.003 when scale=1
     end
 
     methods
         function layer = scaledSigmoidLayer(varargin)
             layer.Name        = 'scaled_sigmoid';
-            layer.Description = 'Sigmoid with learnable scale and bias';
+            layer.Description = 'Sigmoid with learnable scale, fixed bias=-0.003';
 
-            layer.scale = dlarray(single( 1.0));
-            layer.bias  = dlarray(single(-2.0));
+            layer.scale = dlarray(single(1.0));
 
             for k = 1:2:numel(varargin)
                 if strcmpi(varargin{k}, 'Name')
