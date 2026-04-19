@@ -15,7 +15,7 @@ function lgraph = buildFrangiUNet(opts)
 
     archMode = resolveArchMode(opts);
 
-    if ~isfield(opts, 'frangiThreshold'), opts.frangiThreshold = 1e-6; end
+    if ~isfield(opts, 'frangiThreshold'), opts.frangiThreshold = 3e-3; end
 
     H  = opts.imgSize(1);
     W  = opts.imgSize(2);

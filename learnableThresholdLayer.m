@@ -23,7 +23,7 @@ classdef learnableThresholdLayer < nnet.layer.Layer & nnet.layer.Formattable
             if nargin < 1, initThreshold = 0.1; end
             layer.Name        = 'learnable_threshold';
             layer.Description = 'Learnable sigmoid threshold';
-            layer.logScale    = dlarray(single(log(10)));
+            layer.logScale    = dlarray(single(0.0));   % scale=1 keeps sigmoid linear at init
             layer.threshold   = dlarray(single(initThreshold));
 
             for k = 1:2:numel(varargin)
