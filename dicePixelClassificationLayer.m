@@ -21,8 +21,8 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
 %     smooth      – Laplace smoothing for Dice (default 1e-5)
 
     properties
-        lambdaDice = 0.7
-        lambdaBCE  = 0.3
+        lambdaDice = 1.0
+        lambdaBCE  = 0.0
         smooth     = 1e-5
     end
 
