@@ -245,6 +245,14 @@ function out = extractPatch(data, opts, useForegroundBias)
         volPatch = max(0, min(1, volPatch));
     end
 
-    out = {reshape(volPatch,  [pSz 1]), ...
-           reshape(maskPatch, [pSz 1])};
+    % frangi_unet_consistency outputs [Y_pred, V] (2 channels); target must
+    % match that size.  Channel 2 of T is a zero-pad — the loss layer reads
+    % GT from T(:,:,:,1,:) and vesselness V from the network's own output.
+    if strcmp(opts.archMode, 'frangi_unet_consistency')
+        maskOut = reshape(cat(4, maskPatch, zeros(pSz, 'single')), [pSz 2]);
+    else
+        maskOut = reshape(maskPatch, [pSz 1]);
+    end
+
+    out = {reshape(volPatch, [pSz 1]), maskOut};
 end
