@@ -56,7 +56,7 @@ classdef dicePixelClassificationLayer < nnet.layer.RegressionLayer
             intersection = sum(Y_flat .* T_flat, 1);
             union        = sum(Y_flat, 1) + sum(T_flat, 1);
             dice_score   = (2*intersection + eps) ./ (union + eps);
-            L_dice       = mean(1 - dice_score);
+            L_dice       = mean( - dice_score);
 
             % ── Binary cross-entropy loss ─────────────────────────────────
             Y_clip = max(min(Y, 1-1e-7), 1e-7);

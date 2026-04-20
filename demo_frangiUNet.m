@@ -61,7 +61,7 @@ base_opts = struct( ...
     'encoderDepth',       2, ...    % shallow for demo speed
     'initFilters',        8, ...    % small for demo speed
     'lr',                 5e-4, ...
-    'epochs',             500, ...
+    'epochs',             25, ...
     'batchSize',          2, ...
     'l2',                 1e-4, ...
     'valFraction',        0.2, ...
@@ -135,11 +135,11 @@ for m = frangiIdx
             exp(double(fl.logC(ch))));
     end
     % Show learnable threshold params if present
-    tIdx = find(strcmp({nets{m}.Layers.Name}, 'learnable_threshold'), 1);
+    tIdx = find(strcmp({nets{m}.Layers.Name}, 'scaled_sigmoid'), 1);
     if ~isempty(tIdx)
         tl = nets{m}.Layers(tIdx);
         fprintf('  learnable_threshold: threshold=%.4f  scale=%.2f\n', ...
-            double(tl.threshold), exp(double(tl.logScale)));
+            double(tl.bias), double(tl.scale));
     end
 end
 
@@ -313,11 +313,11 @@ function [vol, mask] = syntheticVesselVolume(sz)
         end
     end
 
-    SNR = 3;
+    SNR = 25;
     mysigma = .05;
     bg  = 0.1 + mysigma *randn(H, W, D);
     vol = single(bg + SNR*mysigma*single(mask) + mysigma *randn(H, W, D));
-    vol = max(0, min(1, vol));
+    vol = max(0, min(10, vol));
     mask = single(mask);
 end
 

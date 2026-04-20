@@ -52,7 +52,8 @@ function results = evaluateFrangiUNet(net, imgDir, labelDir, opts)
             N, opts.patchSize(1), opts.patchSize(2), opts.patchSize(3), ...
                opts.patchOverlap(1), opts.patchOverlap(2), opts.patchOverlap(3));
 
-    for i = 1:N
+    %for i = 1:N
+    for i = 1:1
         % ── Load ─────────────────────────────────────────────────────────
         vol   = im2single(niftiread(fullfile(imgDir,   imgFiles(i).name)));
         label = niftiread(fullfile(labelDir, labelFiles(i).name)) > 0;

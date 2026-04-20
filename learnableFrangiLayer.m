@@ -41,7 +41,7 @@ classdef learnableFrangiLayer < nnet.layer.Layer & nnet.layer.Formattable
 
             layer.logAlpha = dlarray(log(0.5)   * ones(numChannels, 1, 'single'));
             layer.logBeta  = dlarray(log(0.5)   * ones(numChannels, 1, 'single'));
-            layer.logC     = dlarray(log(500.0) * ones(numChannels, 1, 'single'));
+            layer.logC     = dlarray(log(.05) * ones(numChannels, 1, 'single'));
 
             for k = 1:2:numel(varargin)
                 if strcmpi(varargin{k},'Name')
