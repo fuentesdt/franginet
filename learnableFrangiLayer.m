@@ -39,15 +39,17 @@ classdef learnableFrangiLayer < nnet.layer.Layer & nnet.layer.Formattable
             sigmas = exp(linspace(log(sigmaMin), log(sigmaMax), numChannels));
             layer.logSigmas = dlarray(single(log(sigmas(:))));   % [nC 1]
 
-            layer.logAlpha = dlarray(log(0.5)   * ones(numChannels, 1, 'single'));
-            layer.logBeta  = dlarray(log(0.5)   * ones(numChannels, 1, 'single'));
-            layer.logC     = dlarray(log(.05) * ones(numChannels, 1, 'single'));
+            layer.logAlpha = dlarray(log(0.5) * ones(numChannels, 1, 'single'));
+            layer.logBeta  = dlarray(log(0.5) * ones(numChannels, 1, 'single'));
+            layer.logC     = dlarray(log(0.05) * ones(numChannels, 1, 'single'));
 
             for k = 1:2:numel(varargin)
                 if strcmpi(varargin{k},'Name')
                     layer.Name = varargin{k+1};
                 elseif strcmpi(varargin{k},'ReduceMax')
                     layer.ReduceMax = varargin{k+1};
+                elseif strcmpi(varargin{k},'LogCInit')
+                    layer.logC = dlarray(single(varargin{k+1}) * ones(numChannels, 1, 'single'));
                 end
             end
         end

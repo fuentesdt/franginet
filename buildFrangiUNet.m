@@ -17,6 +17,12 @@ function lgraph = buildFrangiUNet(opts)
 
     if ~isfield(opts, 'frangiThreshold'), opts.frangiThreshold = 3e-3; end
 
+    % Optional data-driven logC initialisation passed from the training script
+    frangiExtraArgs = {};
+    if isfield(opts, 'logCInit') && ~isempty(opts.logCInit)
+        frangiExtraArgs = {'LogCInit', opts.logCInit};
+    end
+
     H  = opts.imgSize(1);
     W  = opts.imgSize(2);
     D  = opts.imgSize(3);
@@ -35,7 +41,7 @@ function lgraph = buildFrangiUNet(opts)
             % Frangi ∈ [0,1]; bias fixed at -0.5 so the decision boundary
             % starts at x=0.5 (midpoint); only scale is learnable.
             layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
-                                opts.sigmaMax, 'ReduceMax',true, 'Name','frangi');
+                                opts.sigmaMax, 'ReduceMax',true, 'Name','frangi', frangiExtraArgs{:});
             layers{end+1} = scaledSigmoidLayer('Name','scaled_sigmoid');
             connect{end+1} = {'input',          'frangi'};
             connect{end+1} = {'frangi',         'scaled_sigmoid'};
@@ -44,7 +50,7 @@ function lgraph = buildFrangiUNet(opts)
         case 'frangi_linear'
             % Arch 3: Frangi(max) → 1×1×1 Conv → Sigmoid → loss
             layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
-                                opts.sigmaMax, 'ReduceMax',true, 'Name','frangi');
+                                opts.sigmaMax, 'ReduceMax',true, 'Name','frangi', frangiExtraArgs{:});
             layers{end+1} = convolution3dLayer(1, 1, 'Name','conv_out');
             connect{end+1} = {'input',    'frangi'};
             connect{end+1} = {'frangi',   'conv_out'};
@@ -53,7 +59,7 @@ function lgraph = buildFrangiUNet(opts)
         case 'frangi_multichannel'
             % Arch 4: Frangi(all channels) → 1×1×1 Conv → Sigmoid → loss
             layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
-                                opts.sigmaMax, 'ReduceMax',false, 'Name','frangi');
+                                opts.sigmaMax, 'ReduceMax',false, 'Name','frangi', frangiExtraArgs{:});
             layers{end+1} = convolution3dLayer(1, 1, 'Name','conv_out');
             connect{end+1} = {'input',    'frangi'};
             connect{end+1} = {'frangi',   'conv_out'};
@@ -78,7 +84,7 @@ function lgraph = buildFrangiUNet(opts)
 
     if strcmp(archMode, 'frangi_unet')
         layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
-                            opts.sigmaMax, 'ReduceMax',true, 'Name','frangi');
+                            opts.sigmaMax, 'ReduceMax',true, 'Name','frangi', frangiExtraArgs{:});
         connect{end+1} = {'input', 'frangi'};
 
         layers{end+1} = concatenationLayer(4, 2, 'Name','cat_input');

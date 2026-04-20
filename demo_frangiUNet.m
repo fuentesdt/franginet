@@ -37,6 +37,23 @@ for i = 1:nTotal
 end
 fprintf('  Saved %d volume/label pairs.\n', nTotal);
 
+%% ── 0b. Estimate logC from training-set Hessian magnitude ───────────────
+fprintf('\n=== Computing Hessian magnitude statistics (training set) ===\n');
+
+sigma_ref = sqrt(base_opts.sigmaMin * base_opts.sigmaMax);   % geometric mean scale
+S_max_vals = zeros(nTrain, 1);
+for i = 1:nTrain
+    vol_i = single(niftiread(fullfile(imgDir, sprintf('%04d.nii', i))));
+    lo = min(vol_i(:));  hi = max(vol_i(:));
+    if hi > lo, vol_i = (vol_i - lo) / (hi - lo); end
+    S_max_vals(i) = hessianFrobeniusMax(vol_i, sigma_ref);
+end
+S_max_global   = max(S_max_vals);
+logC_init      = log(0.5 * S_max_global);
+base_opts.logCInit = logC_init;
+fprintf('  sigma_ref=%.3f  S_max=%.4e  logC_init=%.4f  (c_init=%.4e)\n', ...
+        sigma_ref, S_max_global, logC_init, exp(logC_init));
+
 %% ── 1. Inspect a sample ─────────────────────────────────────────────────
 fprintf('\n=== Visualising a sample volume (MIPs) ===\n');
 
@@ -323,4 +340,26 @@ end
 
 function v = clamp(v, lo, hi)
     v = max(lo, min(hi, v));
+end
+
+%% ── Hessian Frobenius-norm maximum ──────────────────────────────────────
+
+function S_max = hessianFrobeniusMax(vol, sigma)
+% Returns the maximum scale-normalised Hessian Frobenius norm over the volume.
+% S² = Lxx² + Lyy² + Lzz² + 2*(Lxy² + Lxz² + Lyz²)  (= sum of squared eigenvalues)
+    ks = max(5, 2*ceil(3*sigma)+1);
+    r  = floor(ks/2);
+    [x, y, z] = meshgrid(-r:r, -r:r, -r:r);
+    G   = exp(-(x.^2 + y.^2 + z.^2) / (2*sigma^2)) / (2*pi*sigma^2)^(3/2);
+    sc  = sigma^2;   % scale normalisation
+
+    Lxx = sc * imfilter(vol, G .* (x.^2/sigma^4 - 1/sigma^2), 'replicate');
+    Lyy = sc * imfilter(vol, G .* (y.^2/sigma^4 - 1/sigma^2), 'replicate');
+    Lzz = sc * imfilter(vol, G .* (z.^2/sigma^4 - 1/sigma^2), 'replicate');
+    Lxy = sc * imfilter(vol, G .* (x.*y/sigma^4),              'replicate');
+    Lxz = sc * imfilter(vol, G .* (x.*z/sigma^4),              'replicate');
+    Lyz = sc * imfilter(vol, G .* (y.*z/sigma^4),              'replicate');
+
+    S2    = Lxx.^2 + Lyy.^2 + Lzz.^2 + 2*(Lxy.^2 + Lxz.^2 + Lyz.^2);
+    S_max = sqrt(double(max(S2(:))));
 end
