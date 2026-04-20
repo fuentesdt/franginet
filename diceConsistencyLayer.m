@@ -54,8 +54,9 @@ classdef diceConsistencyLayer < nnet.layer.RegressionLayer
             V      = Y(:,:,:,2,:);   % [H W D 1 B]
 
             % ── Dice loss ─────────────────────────────────────────────────
+            T_gt = T(:,:,:,1,:);             % GT mask — channel 1 of 2-channel target
             Yf = reshape(Y_pred, [], B);
-            Tf = reshape(T,      [], B);
+            Tf = reshape(T_gt,   [], B);
             intersection = sum(Yf .* Tf, 1);
             union        = sum(Yf, 1) + sum(Tf, 1);
             L_dice = mean(1 - (2*intersection + eps) ./ (union + eps));
@@ -83,8 +84,9 @@ classdef diceConsistencyLayer < nnet.layer.RegressionLayer
             V      = Y(:,:,:,2,:);
 
             % ── Dice gradient w.r.t. Y_pred ───────────────────────────────
+            T_gt = T(:,:,:,1,:);
             Yf = reshape(Y_pred, N, B);
-            Tf = reshape(T,      N, B);
+            Tf = reshape(T_gt,   N, B);
             intersection = sum(Yf .* Tf, 1);
             sum_Y        = sum(Yf, 1);
             sum_T        = sum(Tf, 1);
