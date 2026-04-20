@@ -37,23 +37,6 @@ for i = 1:nTotal
 end
 fprintf('  Saved %d volume/label pairs.\n', nTotal);
 
-%% ── 0b. Estimate logC from training-set Hessian magnitude ───────────────
-fprintf('\n=== Computing Hessian magnitude statistics (training set) ===\n');
-
-sigma_ref = sqrt(base_opts.sigmaMin * base_opts.sigmaMax);   % geometric mean scale
-S_max_vals = zeros(nTrain, 1);
-for i = 1:nTrain
-    vol_i = single(niftiread(fullfile(imgDir, sprintf('%04d.nii', i))));
-    lo = min(vol_i(:));  hi = max(vol_i(:));
-    if hi > lo, vol_i = (vol_i - lo) / (hi - lo); end
-    S_max_vals(i) = hessianFrobeniusMax(vol_i, sigma_ref);
-end
-S_max_global   = max(S_max_vals);
-logC_init      = log(0.5 * S_max_global);
-base_opts.logCInit = logC_init;
-fprintf('  sigma_ref=%.3f  S_max=%.4e  logC_init=%.4f  (c_init=%.4e)\n', ...
-        sigma_ref, S_max_global, logC_init, exp(logC_init));
-
 %% ── 1. Inspect a sample ─────────────────────────────────────────────────
 fprintf('\n=== Visualising a sample volume (MIPs) ===\n');
 
@@ -85,6 +68,23 @@ base_opts = struct( ...
     'plots',              'none', ...
     'numFrangiChannels',  2 ...
 );
+
+%% ── 2b. Estimate logC from training-set Hessian magnitude ───────────────
+fprintf('\n=== Computing Hessian magnitude statistics (training set) ===\n');
+
+sigma_ref = sqrt(base_opts.sigmaMin * base_opts.sigmaMax);   % geometric mean scale
+S_max_vals = zeros(nTrain, 1);
+for i = 1:nTrain
+    vol_i = single(niftiread(fullfile(imgDir, sprintf('%04d.nii', i))));
+    lo = min(vol_i(:));  hi = max(vol_i(:));
+    if hi > lo, vol_i = (vol_i - lo) / (hi - lo); end
+    S_max_vals(i) = hessianFrobeniusMax(vol_i, sigma_ref);
+end
+S_max_global       = max(S_max_vals);
+logC_init          = log(0.5 * S_max_global);
+base_opts.logCInit = logC_init;
+fprintf('  sigma_ref=%.3f  S_max=%.4e  logC_init=%.4f  (c_init=%.4e)\n', ...
+        sigma_ref, S_max_global, logC_init, exp(logC_init));
 
 %% ── 3. Train selected architectures ─────────────────────────────────────
 % To run a subset, set RUN_MODELS to a cell array of archMode strings, e.g.:
