@@ -15,7 +15,9 @@ function lgraph = buildFrangiUNet(opts)
 
     archMode = resolveArchMode(opts);
 
-    if ~isfield(opts, 'frangiThreshold'), opts.frangiThreshold = 3e-3; end
+    if ~isfield(opts, 'frangiThreshold'),   opts.frangiThreshold   = 3e-3; end
+    if ~isfield(opts, 'lambdaConsistency'), opts.lambdaConsistency = 0.1;  end
+    if ~isfield(opts, 'lambdaBreak'),       opts.lambdaBreak       = 0.1;  end
 
     % Optional data-driven logC initialisation passed from the training script
     frangiExtraArgs = {};
@@ -64,16 +66,28 @@ function lgraph = buildFrangiUNet(opts)
             connect{end+1} = {'input',    'frangi'};
             connect{end+1} = {'frangi',   'conv_out'};
             connect{end+1} = {'conv_out', 'sigmoid'};
+
+        case 'frangi_learnable_threshold'
+            % Arch 5: Frangi(max) → learnableThreshold(sigmoid(scale·(x−t))) → loss
+            % Both threshold position t and sharpness scale are learnable.
+            layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
+                                opts.sigmaMax, 'ReduceMax',true, 'Name','frangi', frangiExtraArgs{:});
+            layers{end+1} = learnableThresholdLayer(opts.frangiThreshold, ...
+                                'Name','learnable_threshold');
+            connect{end+1} = {'input',               'frangi'};
+            connect{end+1} = {'frangi',              'learnable_threshold'};
+            connect{end+1} = {'learnable_threshold', 'loss'};
     end
 
-    if ismember(archMode, {'frangi_threshold','frangi_linear','frangi_multichannel'})
+    if ismember(archMode, {'frangi_threshold','frangi_linear','frangi_multichannel', ...
+                            'frangi_learnable_threshold'})
         layers{end+1} = dicePixelClassificationLayer('Name','loss');
         if ismember(archMode, {'frangi_linear','frangi_multichannel'})
             layers{end+1} = sigmoidLayer('Name','sigmoid');
             connect{end+1} = {'conv_out', 'sigmoid'};
             connect{end+1} = {'sigmoid',  'loss'};
         end
-        % frangi_threshold: frangi → scaled_sigmoid → loss wired in switch above
+        % frangi_threshold / frangi_learnable_threshold: wired in switch above
         lgraph = assembleDag(layers, connect);
         return
     end
@@ -82,7 +96,7 @@ function lgraph = buildFrangiUNet(opts)
     nF = opts.initFilters;
     Dp = opts.encoderDepth;
 
-    if strcmp(archMode, 'frangi_unet')
+    if ismember(archMode, {'frangi_unet','frangi_unet_consistency'})
         layers{end+1} = learnableFrangiLayer(nFrangiCh, opts.sigmaMin, ...
                             opts.sigmaMax, 'ReduceMax',true, 'Name','frangi', frangiExtraArgs{:});
         connect{end+1} = {'input', 'frangi'};
@@ -146,8 +160,21 @@ function lgraph = buildFrangiUNet(opts)
     layers{end+1} = sigmoidLayer('Name','sigmoid');
     connect{end+1} = {'conv_out','sigmoid'};
 
-    layers{end+1} = dicePixelClassificationLayer('Name','loss');
-    connect{end+1} = {'sigmoid','loss'};
+    if strcmp(archMode, 'frangi_unet_consistency')
+        % Concatenate sigmoid output (ch1) with Frangi vesselness (ch2).
+        % diceConsistencyLayer applies Dice(Y_pred, GT) + λ·MSE(Y_pred, V).
+        layers{end+1} = concatenationLayer(4, 2, 'Name','cat_consistency');
+        connect{end+1} = {'sigmoid', 'cat_consistency/in1'};
+        connect{end+1} = {'frangi',  'cat_consistency/in2'};
+
+        layers{end+1} = diceConsistencyLayer('LambdaConsistency', opts.lambdaConsistency, ...
+                                              'LambdaBreak',       opts.lambdaBreak, ...
+                                              'Name','loss');
+        connect{end+1} = {'cat_consistency', 'loss'};
+    else
+        layers{end+1} = dicePixelClassificationLayer('Name','loss');
+        connect{end+1} = {'sigmoid','loss'};
+    end
 
     lgraph = assembleDag(layers, connect);
 end

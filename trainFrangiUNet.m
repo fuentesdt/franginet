@@ -87,6 +87,8 @@ function opts = defaultOpts(opts)
         'archMode',           '', ...   % '' = derive from useFrangi
         'numFrangiChannels',  1, ...
         'logCInit',           [], ...      % override logC init from data (empty = layer default)
+        'lambdaConsistency',  0.1, ...    % weight of MSE consistency term (frangi_unet_consistency)
+        'lambdaBreak',        0.1, ...    % weight of |∇V|*(1-Y) break penalty (frangi_unet_consistency)
         'augFlip',            true, ...   % random 50/50 flip along each axis
         'augNoiseStd',        0.02, ...   % additive Gaussian noise std (post-norm scale)
         'augIntensityScale',  [0.9 1.1] ... % multiplicative intensity jitter range

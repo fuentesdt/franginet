@@ -78,8 +78,9 @@ function prob = predictVolume(net, vol, opts)
                 e3 = i3 + pSz(3) - 1;
 
                 patch = vol(i1:e1, i2:e2, i3:e3);
-                X     = reshape(im2single(patch), [pSz 1 1]);   % [H W D 1 1]
-                p     = single(squeeze(predict(net, X)));        % [H W D]
+                X     = reshape(im2single(patch), [pSz 1 1]);    % [H W D 1 1]
+                p_raw = single(predict(net, X));
+                p     = squeeze(p_raw(:,:,:,1,:));               % [H W D] — ch1 only
 
                 probAcc(i1:e1, i2:e2, i3:e3) = probAcc(i1:e1, i2:e2, i3:e3) + p .* W;
                 wsumAcc(i1:e1, i2:e2, i3:e3) = wsumAcc(i1:e1, i2:e2, i3:e3) + W;
