@@ -1,6 +1,6 @@
 %% democomparison.m
 %  -----------------------------------------------------------------------
-%  Hybrid Frangi-UNet vs plain U-Net — real NIfTI data comparison
+%  FUNet cons+break vs plain U-Net — real NIfTI data comparison
 %  -----------------------------------------------------------------------
 %
 %  Workflow:
@@ -58,7 +58,9 @@ TRAIN_OPTS = struct( ...
     'numFrangiChannels',  10,         ...
     'augFlip',            true,       ...
     'augNoiseStd',        0.02,       ...
-    'augIntensityScale',  [0.9 1.1]   ...
+    'augIntensityScale',  [0.9 1.1],  ...
+    'lambdaConsistency',  0.1,        ...
+    'lambdaBreak',        0.1         ...
 );
 
 rng(42);
@@ -163,6 +165,23 @@ end
 fprintf('\nPatch-based training: patchSize=[%d %d %d]  patchesPerVolume=%d\n', ...
         TRAIN_OPTS.patchSize, TRAIN_OPTS.patchesPerVolume);
 
+%% ── 3b. Estimate logC from training-set Hessian magnitude ───────────────
+fprintf('\n=== Computing Hessian magnitude statistics (training set) ===\n');
+
+sigma_ref    = sqrt(TRAIN_OPTS.sigmaMin * TRAIN_OPTS.sigmaMax);
+trainNiiList = dir(fullfile(trainImgDir, '*.nii'));
+S_max_vals   = zeros(numel(trainNiiList), 1);
+for k = 1:numel(trainNiiList)
+    vol_k = single(niftiread(fullfile(trainImgDir, trainNiiList(k).name)));
+    lo = min(vol_k(:));  hi = max(vol_k(:));
+    if hi > lo, vol_k = (vol_k - lo) / (hi - lo); end
+    S_max_vals(k) = hessianFrobeniusMax(vol_k, sigma_ref);
+end
+S_max_global        = max(S_max_vals);
+TRAIN_OPTS.logCInit = log(0.5 * S_max_global);
+fprintf('  sigma_ref=%.3f  S_max=%.4e  logC_init=%.4f  (c_init=%.4e)\n', ...
+        sigma_ref, S_max_global, TRAIN_OPTS.logCInit, exp(TRAIN_OPTS.logCInit));
+
 %% ── 4. Greedy hyperparameter search ─────────────────────────────────────
 %
 %  Optimises initFilters, encoderDepth, and patchSize one at a time (coordinate
@@ -243,27 +262,27 @@ for pi = 1:size(SEARCH_PARAMS, 1)
     fprintf('  %-16s = %s\n', param, mat2str(TRAIN_OPTS.(param)));
 end
 
-%% ── 5. Train hybrid Frangi-UNet ──────────────────────────────────────────
-fprintf('\n=== [1/2] Training hybrid Frangi-UNet ===\n');
+%% ── 5. Train FUNet cons+break ────────────────────────────────────────────
+fprintf('\n=== [1/2] Training FUNet cons+break ===\n');
 rng(42);
-opts_hybrid           = TRAIN_OPTS;
-opts_hybrid.useFrangi = true;
-[net_hybrid, info_hybrid] = trainFrangiUNet(trainImgDir, trainMaskDir, opts_hybrid);
+opts_funet            = TRAIN_OPTS;
+opts_funet.archMode   = 'frangi_unet_consistency';
+[net_funet, info_funet] = trainFrangiUNet(trainImgDir, trainMaskDir, opts_funet);
 
 %% ── 6. Train plain U-Net (control) ───────────────────────────────────────
 fprintf('\n=== [2/2] Training plain U-Net (control) ===\n');
 rng(42);
-opts_plain           = TRAIN_OPTS;
-opts_plain.useFrangi = false;
+opts_plain          = TRAIN_OPTS;
+opts_plain.archMode = 'unet';
 [net_plain, info_plain] = trainFrangiUNet(trainImgDir, trainMaskDir, opts_plain);
 
-%% ── 7. Inspect learned Frangi parameters ───────────────────────────────
-fprintf('\n=== Learned 3-D Frangi parameters ===\n');
-layerIdx = find(strcmp({net_hybrid.Layers.Name}, 'frangi'), 1);
+%% ── 7. Inspect learned Frangi parameters ────────────────────────────────
+fprintf('\n=== Learned 3-D Frangi parameters (FUNet cons+break) ===\n');
+layerIdx = find(strcmp({net_funet.Layers.Name}, 'frangi'), 1);
 if ~isempty(layerIdx)
-    fl = net_hybrid.Layers(layerIdx);
+    fl = net_funet.Layers(layerIdx);
     for ch = 1:fl.NumChannels
-        fprintf('  [ch %d] sigma=%.3f  alpha=%.4f  beta=%.4f  c=%.2f\n', ch, ...
+        fprintf('  [ch %d] sigma=%.3f  alpha=%.4f  beta=%.4f  c=%.4f\n', ch, ...
             exp(double(fl.logSigmas(ch))), ...
             exp(double(fl.logAlpha(ch))), ...
             exp(double(fl.logBeta(ch))), ...
@@ -278,8 +297,8 @@ evalOpts.patchSize    = TRAIN_OPTS.patchSize;
 evalOpts.patchOverlap = TRAIN_OPTS.patchOverlap;
 evalOpts.threshold    = 0.5;
 
-evalOpts.outDir = fullfile(OUTPUT_DIR, 'preds_hybrid');
-results_hybrid  = evaluateFrangiUNet(net_hybrid, testImgDir, testMaskDir, evalOpts);
+evalOpts.outDir = fullfile(OUTPUT_DIR, 'preds_funet');
+results_funet   = evaluateFrangiUNet(net_funet, testImgDir, testMaskDir, evalOpts);
 
 evalOpts.outDir = fullfile(OUTPUT_DIR, 'preds_plain');
 results_plain   = evaluateFrangiUNet(net_plain,  testImgDir, testMaskDir, evalOpts);
@@ -289,67 +308,67 @@ fprintf('\n');
 fprintf('╔══════════════════════╦══════════╦══════════╦══════════╗\n');
 fprintf('║ Model                ║   Dice   ║  clDice  ║   AUC    ║\n');
 fprintf('╠══════════════════════╬══════════╬══════════╬══════════╣\n');
-fprintf('║ Hybrid Frangi-UNet   ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
-        results_hybrid.meanDice, results_hybrid.meanClDice, results_hybrid.meanAUC);
+fprintf('║ FUNet cons+break     ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
+        results_funet.meanDice, results_funet.meanClDice, results_funet.meanAUC);
 fprintf('║ Plain U-Net          ║ %8.4f ║ %8.4f ║ %8.4f ║\n', ...
-        results_plain.meanDice,  results_plain.meanClDice,  results_plain.meanAUC);
+        results_plain.meanDice, results_plain.meanClDice, results_plain.meanAUC);
 fprintf('╠══════════════════════╬══════════╬══════════╬══════════╣\n');
-fprintf('║ Δ (hybrid − plain)   ║ %+8.4f ║ %+8.4f ║ %+8.4f ║\n', ...
-        results_hybrid.meanDice   - results_plain.meanDice,   ...
-        results_hybrid.meanClDice - results_plain.meanClDice, ...
-        results_hybrid.meanAUC    - results_plain.meanAUC);
+fprintf('║ Δ (FUNet − plain)    ║ %+8.4f ║ %+8.4f ║ %+8.4f ║\n', ...
+        results_funet.meanDice   - results_plain.meanDice,   ...
+        results_funet.meanClDice - results_plain.meanClDice, ...
+        results_funet.meanAUC    - results_plain.meanAUC);
 fprintf('╚══════════════════════╩══════════╩══════════╩══════════╝\n');
 
-%% ── 10. Per-sample Dice scatter ─────────────────────────────────────────
-figure('Name','Per-sample Dice: hybrid vs plain','Color','w');
-scatter(results_plain.dice, results_hybrid.dice, 60, 'filled'); hold on;
+%% ── 10. Per-sample Dice scatter ──────────────────────────────────────────
+figure('Name','Per-sample Dice: FUNet cons+break vs plain','Color','w');
+scatter(results_plain.dice, results_funet.dice, 60, 'filled'); hold on;
 lims = [0 1];
 plot(lims, lims, 'k--', 'LineWidth', 1);
 xlabel('Plain U-Net Dice');
-ylabel('Hybrid Frangi-UNet Dice');
-title(sprintf('Per-sample Dice on %d test volumes\n(above diagonal = Frangi helps)', nTest));
+ylabel('FUNet cons+break Dice');
+title(sprintf('Per-sample Dice on %d test volumes\n(above diagonal = FUNet helps)', nTest));
 grid on; axis square; xlim(lims); ylim(lims);
 
 %% ── 11. MIP visualisation — best-delta test case ─────────────────────────
 fprintf('\n=== Visualising test case with largest Dice improvement ===\n');
 
-[~, bestIdx] = max(results_hybrid.dice - results_plain.dice);
+[~, bestIdx] = max(results_funet.dice - results_plain.dice);
 
 testImgFiles  = sortedNiiList(testImgDir);
 testMaskFiles = sortedNiiList(testMaskDir);
-hybridProbs   = sortedNiiList(fullfile(OUTPUT_DIR, 'preds_hybrid'), '_prob');
-plainProbs    = sortedNiiList(fullfile(OUTPUT_DIR, 'preds_plain'),  '_prob');
+funetProbs    = sortedNiiList(fullfile(OUTPUT_DIR, 'preds_funet'), '_prob');
+plainProbs    = sortedNiiList(fullfile(OUTPUT_DIR, 'preds_plain'), '_prob');
 
-vol_t       = single(niftiread(fullfile(testImgDir,  testImgFiles(bestIdx).name)));
-gt_mask     = single(niftiread(fullfile(testMaskDir, testMaskFiles(bestIdx).name)));
-prob_hybrid = double(niftiread(fullfile(OUTPUT_DIR, 'preds_hybrid', hybridProbs(bestIdx).name)));
-prob_plain  = double(niftiread(fullfile(OUTPUT_DIR, 'preds_plain',  plainProbs(bestIdx).name)));
-pred_hybrid = prob_hybrid >= 0.5;
-pred_plain  = prob_plain  >= 0.5;
+vol_t      = single(niftiread(fullfile(testImgDir,  testImgFiles(bestIdx).name)));
+gt_mask    = single(niftiread(fullfile(testMaskDir, testMaskFiles(bestIdx).name)));
+prob_funet = double(niftiread(fullfile(OUTPUT_DIR, 'preds_funet', funetProbs(bestIdx).name)));
+prob_plain = double(niftiread(fullfile(OUTPUT_DIR, 'preds_plain', plainProbs(bestIdx).name)));
+pred_funet = prob_funet >= 0.5;
+pred_plain = prob_plain >= 0.5;
 
-cols  = {'Input', 'GT mask', 'Hybrid prob', 'Hybrid mask', 'Plain prob', 'Plain mask'};
-vdata = {vol_t, gt_mask, prob_hybrid, pred_hybrid, prob_plain, pred_plain};
+cols  = {'Input','GT mask','FUNet prob','FUNet mask','Plain prob','Plain mask'};
+vdata = {vol_t, gt_mask, prob_funet, pred_funet, prob_plain, pred_plain};
 nC    = numel(cols);
 
-figure('Name', sprintf('Test case %d — Dice: hybrid=%.3f  plain=%.3f', ...
-       bestIdx, results_hybrid.dice(bestIdx), results_plain.dice(bestIdx)), 'Color','w');
+figure('Name', sprintf('Test case %d — Dice: FUNet=%.3f  plain=%.3f', ...
+       bestIdx, results_funet.dice(bestIdx), results_plain.dice(bestIdx)), 'Color','w');
 for c = 1:nC
     v = vdata{c};
-    subplot(3,nC,c);        imshow(squeeze(max(v,[],3)),[]); title([cols{c} ' ax']);
-    subplot(3,nC,c+nC);     imshow(squeeze(max(v,[],2)),[]); title([cols{c} ' cor']);
-    subplot(3,nC,c+2*nC);   imshow(squeeze(max(v,[],1)),[]); title([cols{c} ' sag']);
+    subplot(3,nC,c);       imshow(squeeze(max(v,[],3)),[]); title([cols{c} ' ax']);
+    subplot(3,nC,c+nC);    imshow(squeeze(max(v,[],2)),[]); title([cols{c} ' cor']);
+    subplot(3,nC,c+2*nC);  imshow(squeeze(max(v,[],1)),[]); title([cols{c} ' sag']);
 end
 
 %% ── 12. Training-loss curves ─────────────────────────────────────────────
-figure('Name','Training loss — hybrid vs plain','Color','w');
-semilogy(info_hybrid.TrainingLoss,   'b-',  'LineWidth',1.5); hold on;
-semilogy(info_plain.TrainingLoss,    'r-',  'LineWidth',1.5);
-semilogy(info_hybrid.ValidationLoss, 'b--', 'LineWidth',1.5);
-semilogy(info_plain.ValidationLoss,  'r--', 'LineWidth',1.5);
-xlabel('Iteration'); ylabel('Loss (Dice + BCE, log scale)');
-legend('Hybrid train','Plain train','Hybrid val','Plain val','Location','northeast');
+figure('Name','Training loss — FUNet cons+break vs plain','Color','w');
+semilogy(info_funet.TrainingLoss,   'b-',  'LineWidth',1.5); hold on;
+semilogy(info_plain.TrainingLoss,   'r-',  'LineWidth',1.5);
+semilogy(info_funet.ValidationLoss, 'b--', 'LineWidth',1.5);
+semilogy(info_plain.ValidationLoss, 'r--', 'LineWidth',1.5);
+xlabel('Iteration'); ylabel('Loss (log scale)');
+legend('FUNet train','Plain train','FUNet val','Plain val','Location','northeast');
 grid on;
-title('Training loss: Hybrid Frangi-UNet vs Plain U-Net');
+title('Training loss: FUNet cons+break vs Plain U-Net');
 
 fprintf('\nOutputs written to: %s\n', makeAbsolute(OUTPUT_DIR));
 fprintf('Demo complete.\n');
