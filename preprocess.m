@@ -18,8 +18,9 @@
 %
 %  Output CSV  (OUT_DIR/manifest.csv, same column order as tuneFrangi.m):
 %    col 1 — sample ID
-%    col 2 — relative path to binary vessel mask
+%    col 2 — relative path to binary vessel mask  (label == 2)
 %    col 3 — relative path to cropped image
+%    col 4 — relative path to liver mask          (label >  0)
 %  -----------------------------------------------------------------------
 
 clear; clc;
@@ -28,12 +29,14 @@ clear; clc;
 IN_CSV  = 'vesseltraininglr.csv';    % full-path manifest (input)
 OUT_DIR = 'preprocessed';    % root output directory
 IMG_SUBDIR = 'images';
-MSK_SUBDIR = 'masks';
+MSK_SUBDIR  = 'masks';
+LIV_SUBDIR  = 'liver';
 
 %% ── Directory setup ──────────────────────────────────────────────────────
 imgOutDir = fullfile(OUT_DIR, IMG_SUBDIR);
 mskOutDir = fullfile(OUT_DIR, MSK_SUBDIR);
-for d = {OUT_DIR, imgOutDir, mskOutDir}
+livOutDir = fullfile(OUT_DIR, LIV_SUBDIR);
+for d = {OUT_DIR, imgOutDir, mskOutDir, livOutDir}
     if ~exist(d{1}, 'dir'), mkdir(d{1}); end
 end
 
@@ -90,34 +93,42 @@ for i = 1:N
     imgCrop = img(x1:x2, y1:y2, z1:z2);   % original intensities preserved
     lblCrop = lbl(x1:x2, y1:y2, z1:z2);
 
-    %% Binary vessel mask  (label == 2)
-    vesselMask = uint8(lblCrop == 2);
+    %% Binary masks
+    vesselMask = uint8(lblCrop == 2);          % label 2 → vessel
+    liverMask  = uint8(lblCrop >  0);          % label 1+2 → liver ROI
     fprintf('  Vessel voxels: %d (%.1f%% of BB)\n', ...
             sum(vesselMask(:)), 100*mean(vesselMask(:)));
+    fprintf('  Liver  voxels: %d (%.1f%% of BB)\n', ...
+            sum(liverMask(:)),  100*mean(liverMask(:)));
 
     %% Update NIfTI spatial transform for crop offset
     imgInfoCrop = update_nifti_info(imgInfo, [x1 y1 z1], size(imgCrop));
-    lblInfoCrop = update_nifti_info(lblInfo, [x1 y1 z1], size(vesselMask));
+    mskInfoCrop = update_nifti_info(lblInfo, [x1 y1 z1], size(vesselMask));
 
     %% Output filenames
-    idStr   = sprintf('%s', num2str(sampleID));
+    idStr   = num2str(sampleID);
     imgName = sprintf('image_%s.nii.gz',  idStr);
     mskName = sprintf('mask_%s.nii.gz',   idStr);
+    livName = sprintf('liver_%s.nii.gz',  idStr);
 
     imgOutPath = fullfile(imgOutDir, imgName);
     mskOutPath = fullfile(mskOutDir, mskName);
+    livOutPath = fullfile(livOutDir, livName);
 
     %% Write NIfTIs
     niftiwrite(imgCrop,    imgOutPath, imgInfoCrop, 'Compressed', true);
-    niftiwrite(cast(vesselMask, lblInfoCrop.Datatype), mskOutPath, lblInfoCrop, 'Compressed', true);
+    niftiwrite(vesselMask, mskOutPath, mskInfoCrop, 'Compressed', true);
+    niftiwrite(liverMask,  livOutPath, mskInfoCrop, 'Compressed', true);
 
     fprintf('  -> %s\n', imgOutPath);
-    fprintf('  -> %s\n\n', mskOutPath);
+    fprintf('  -> %s\n', mskOutPath);
+    fprintf('  -> %s\n\n', livOutPath);
 
-    %% Write CSV row: id, relative_mask, relative_image
+    %% Write CSV row: id, vessel_mask, image, liver_mask
     relImg = [IMG_SUBDIR '/' imgName];
     relMsk = [MSK_SUBDIR '/' mskName];
-    fprintf(fid, '%s,%s,%s\n', num2str(sampleID), relMsk, relImg);
+    relLiv = [LIV_SUBDIR '/' livName];
+    fprintf(fid, '%s,%s,%s,%s\n', num2str(sampleID), relMsk, relImg, relLiv);
 end
 
 fclose(fid);

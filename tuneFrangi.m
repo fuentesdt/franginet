@@ -39,9 +39,11 @@ fprintf('=== Loading training data from %s ===\n', CSV_FILE);
 csvDir = fileparts(CSV_FILE);
 T      = readcell(CSV_FILE, 'Delimiter', ',', 'NumHeaderLines', 0);
 
-N   = size(T, 1);
-imgs  = cell(N, 1);
-masks = cell(N, 1);
+N      = size(T, 1);
+hasROI = size(T, 2) >= 4;
+imgs   = cell(N, 1);
+masks  = cell(N, 1);
+rois   = cell(N, 1);   % liver masks (empty when not provided)
 
 for i = 1:N
     mskRel = T{i,2};
@@ -51,8 +53,17 @@ for i = 1:N
 
     imgs{i}  = vol;
     masks{i} = logical(msk);
+
+    if hasROI
+        roiRel  = T{i,4};
+        rois{i} = niftiread(fullfile(csvDir, roiRel)) > 0;
+    end
 end
-fprintf('  Loaded %d volumes.\n', N);
+if hasROI
+    fprintf('  Loaded %d volumes with liver ROI masks.\n', N);
+else
+    fprintf('  Loaded %d volumes (no ROI column — whole-volume Dice).\n', N);
+end
 
 %% ── 2. Initialise C from Hessian Frobenius norm ──────────────────────────
 fprintf('=== Computing Hessian magnitude statistics ===\n');
@@ -81,7 +92,7 @@ fprintf('\n=== Starting Nelder-Mead optimisation (%d patches, %d scales) ===\n',
 fprintf('  Initial params: sigmaMin=%.3f  sigmaMax=%.3f  alpha=%.3f  beta=%.3f  C=%.4f\n', ...
         exp(x0(1)), exp(x0(2)), exp(x0(3)), exp(x0(4)), exp(x0(5)));
 
-objFun = @(x) negSoftDice(x, imgs, masks, NUM_SCALES);
+objFun = @(x) negSoftDice(x, imgs, masks, rois, NUM_SCALES);
 
 opts_nm = optimset('fminsearch');
 opts_nm.MaxFunEvals = MAX_ITER * numel(x0);
@@ -109,7 +120,7 @@ ns_candidates = [1 2 3 4 6 8];
 softDice_ns   = zeros(size(ns_candidates));
 for ki = 1:numel(ns_candidates)
     ns = ns_candidates(ki);
-    sd = -negSoftDice(x_opt, imgs, masks, ns);
+    sd = -negSoftDice(x_opt, imgs, masks, rois, ns);
     softDice_ns(ki) = sd;
     fprintf('  numScales=%d  soft-Dice=%.4f\n', ns, sd);
 end
@@ -121,8 +132,8 @@ fprintf('  Best numScales = %d\n', numScales_opt);
 fprintf('\n=== Threshold sweep: x0 (initial) vs x_opt (optimised) ===\n');
 thresholds = 0.01 : 0.01 : 0.99;
 
-[allV_x0,  thr_x0,  bestDice_x0,  dice_hard_x0]  = evalParams(x0,    imgs, masks, NUM_SCALES, thresholds);
-[allV_opt, thr_opt, bestDice_opt, dice_hard_opt] = evalParams(x_opt, imgs, masks, numScales_opt, thresholds);
+[allV_x0,  thr_x0,  bestDice_x0,  dice_hard_x0]  = evalParams(x0,    imgs, masks, rois, NUM_SCALES,    thresholds);
+[allV_opt, thr_opt, bestDice_opt, dice_hard_opt] = evalParams(x_opt, imgs, masks, rois, numScales_opt, thresholds);
 
 fprintf('  x0   threshold=%.2f  mean hard-Dice=%.4f\n', thr_x0,  bestDice_x0);
 fprintf('  x_opt threshold=%.2f  mean hard-Dice=%.4f\n', thr_opt, bestDice_opt);
@@ -134,19 +145,21 @@ fprintf('  %-6s  %-12s  %-12s  %-12s  %-12s\n', ...
         'Patch', 'SoftDice_x0', 'SoftDice_opt', 'HardDice_x0', 'HardDice_opt');
 fprintf('%s\n', SEP);
 for i = 1:N
-    sd0  = softDice1(allV_x0{i},  single(masks{i}));
-    sdOp = softDice1(allV_opt{i}, single(masks{i}));
+    sd0  = softDice1(allV_x0{i},  single(masks{i}), rois{i});
+    sdOp = softDice1(allV_opt{i}, single(masks{i}), rois{i});
     fprintf('  %-6d  %-12.4f  %-12.4f  %-12.4f  %-12.4f\n', ...
             i, sd0, sdOp, dice_hard_x0(i), dice_hard_opt(i));
 end
 fprintf('%s\n', SEP);
+sd_x0_mean = -negSoftDice(x0, imgs, masks, rois, NUM_SCALES);
 fprintf('  %-6s  %-12.4f  %-12.4f  %-12.4f  %-12.4f\n', 'MEAN', ...
-        -negSoftDice(x0, imgs, masks, NUM_SCALES), -fval, ...
-        mean(dice_hard_x0), mean(dice_hard_opt));
+        sd_x0_mean, -fval, mean(dice_hard_x0), mean(dice_hard_opt));
 fprintf('%s\n', SEP);
 fprintf('  Improvement: soft-Dice %+.4f   hard-Dice %+.4f\n', ...
-        (-fval) - (-negSoftDice(x0, imgs, masks, NUM_SCALES)), ...
-        mean(dice_hard_opt) - mean(dice_hard_x0));
+        (-fval) - sd_x0_mean, mean(dice_hard_opt) - mean(dice_hard_x0));
+if hasROI
+    fprintf('  (Dice computed within liver ROI mask)\n');
+end
 
 %% ── 7. Save results ──────────────────────────────────────────────────────
 result = struct( ...
@@ -169,8 +182,9 @@ fprintf('\nResults saved to %s\n', RESULT_MAT);
 % LOCAL FUNCTIONS
 % =========================================================================
 
-function val = negSoftDice(x, imgs, masks, numScales)
+function val = negSoftDice(x, imgs, masks, rois, numScales)
 % Negative mean soft-Dice over all patches for given log-space params.
+% rois: cell array of liver masks (empty cells → whole-volume Dice).
     sigmaMin = exp(x(1));
     sigmaMax = max(exp(x(2)), sigmaMin * 1.01);
     alpha    = exp(x(3));
@@ -182,14 +196,15 @@ function val = negSoftDice(x, imgs, masks, numScales)
     d = zeros(N, 1);
     for i = 1:N
         V    = frangiVesselness3D(imgs{i}, sigmas, alpha, beta, C);
-        d(i) = softDice1(V, single(masks{i}));
+        d(i) = softDice1(V, single(masks{i}), rois{i});
     end
     val = -mean(d);
 end
 
 % -------------------------------------------------------------------------
-function [allV, thr_best, dice_best, dice_hard] = evalParams(x, imgs, masks, numScales, thresholds)
+function [allV, thr_best, dice_best, dice_hard] = evalParams(x, imgs, masks, rois, numScales, thresholds)
 % Compute vesselness for all patches, find best hard-Dice threshold.
+% rois: cell array of liver masks (empty cells → whole-volume Dice).
     sigmaMin = exp(x(1));
     sigmaMax = max(exp(x(2)), sigmaMin * 1.01);
     alpha    = exp(x(3));
@@ -207,7 +222,7 @@ function [allV, thr_best, dice_best, dice_hard] = evalParams(x, imgs, masks, num
     for ti = 1:numel(thresholds)
         d = zeros(N, 1);
         for i = 1:N
-            d(i) = diceCoeff(allV{i} >= thresholds(ti), masks{i});
+            d(i) = diceCoeff(allV{i} >= thresholds(ti), masks{i}, rois{i});
         end
         meanDice_thr(ti) = mean(d);
     end
@@ -216,7 +231,7 @@ function [allV, thr_best, dice_best, dice_hard] = evalParams(x, imgs, masks, num
     thr_best  = thresholds(best_ti);
     dice_hard = zeros(N, 1);
     for i = 1:N
-        dice_hard(i) = diceCoeff(allV{i} >= thr_best, masks{i});
+        dice_hard(i) = diceCoeff(allV{i} >= thr_best, masks{i}, rois{i});
     end
 end
 
@@ -300,15 +315,27 @@ function [ev1, ev2, ev3] = cardanoEig3(Lxx, Lxy, Lxz, Lyy, Lyz, Lzz)
 end
 
 % -------------------------------------------------------------------------
-function d = softDice1(V, G)
+function d = softDice1(V, G, roi)
 % Soft Dice between vesselness map V in [0,1] and binary mask G in {0,1}.
+% roi (optional): logical mask — restricts computation to ROI voxels.
+    if nargin >= 3 && ~isempty(roi)
+        r  = logical(roi(:));
+        Vf = V(r);  Gf = G(r);
+    else
+        Vf = V(:);  Gf = G(:);
+    end
     eps = 1e-5;
-    Vf  = V(:);  Gf = G(:);
     d   = (2*sum(Vf .* Gf) + eps) / (sum(Vf) + sum(Gf) + eps);
 end
 
 % -------------------------------------------------------------------------
-function d = diceCoeff(pred, gt)
-    pred = logical(pred(:));  gt = logical(gt(:));
-    d    = 2*sum(pred & gt) / (sum(pred) + sum(gt) + 1e-8);
+function d = diceCoeff(pred, gt, roi)
+% roi (optional): logical mask — restricts computation to ROI voxels.
+    if nargin >= 3 && ~isempty(roi)
+        r    = logical(roi(:));
+        pred = logical(pred(r));  gt = logical(gt(r));
+    else
+        pred = logical(pred(:));  gt = logical(gt(:));
+    end
+    d = 2*sum(pred & gt) / (sum(pred) + sum(gt) + 1e-8);
 end
