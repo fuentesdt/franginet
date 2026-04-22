@@ -117,8 +117,8 @@ for i = 1:N
 
     %% Write NIfTIs
     niftiwrite(imgCrop,    imgOutPath, imgInfoCrop, 'Compressed', true);
-    niftiwrite(vesselMask, mskOutPath, mskInfoCrop, 'Compressed', true);
-    niftiwrite(liverMask,  livOutPath, mskInfoCrop, 'Compressed', true);
+    niftiwrite(cast(vesselMask, mskInfoCrop.Datatype), mskOutPath, mskInfoCrop, 'Compressed', true);
+    niftiwrite(cast(liverMask , mskInfoCrop.Datatype), livOutPath, mskInfoCrop, 'Compressed', true);
 
     fprintf('  -> %s\n', imgOutPath);
     fprintf('  -> %s\n', mskOutPath);
