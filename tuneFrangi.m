@@ -49,10 +49,6 @@ for i = 1:N
     vol  = single(niftiread(fullfile(csvDir, imgRel)));
     msk  = niftiread(fullfile(csvDir, mskRel)) > 0;
 
-    % Per-volume intensity normalisation to [0, 1]
-    lo = min(vol(:));  hi = max(vol(:));
-    if hi > lo, vol = (vol - lo) / (hi - lo); end
-
     imgs{i}  = vol;
     masks{i} = logical(msk);
 end
