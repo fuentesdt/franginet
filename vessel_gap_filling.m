@@ -6,9 +6,10 @@
 % and B (blob suppressor) as a geometric flow field to bridge breaks in
 % a thresholded vesselness mask.
 %
-% INPUTS (loaded from file):
-%   image.nii.gz      - 3D CT volume (HU values)
-%   vesselness.nii.gz - Frangi vesselness map (same geometry)
+% INPUTS:
+%   image.nii.gz      - 3D intensity volume (any modality; normalised to [0,1])
+%   Frangi parameters are loaded automatically from tuneFrangi_result.mat
+%                       (produced by tuneFrangi.m)
 %
 % OUTPUTS:
 %   filled_mask.nii.gz     - binary vessel mask with gaps bridged
@@ -23,15 +24,20 @@
 %       https://www.mathworks.com/matlabcentral/fileexchange/24531
 %
 % USAGE:
-%   vessel_gap_filling('image.nii.gz', 'vesselness.nii.gz')
-%   vessel_gap_filling('image.nii.gz', 'vesselness.nii.gz', 'alpha', 0.5)
+%   vessel_gap_filling('image.nii.gz')
+%   vessel_gap_filling('image.nii.gz', 'result_mat', 'my_tuneFrangi_result.mat')
+%   vessel_gap_filling('image.nii.gz', 'max_gap_mm', 12.0)
 %
 % PARAMETERS (name-value pairs, all optional):
-%   alpha          Frangi alpha (eccentricity sensitivity)    default 0.5
-%   beta           Frangi beta  (blobness sensitivity)        default 0.5
-%   t_vessel       vesselness threshold for mask              default 0.15
-%   t_resume       vesselness threshold to declare resume     default 0.12
-%   t_break        vesselness level considered background     default 0.05
+%   result_mat     path to tuneFrangi_result.mat                default 'tuneFrangi_result.mat'
+%                  Supplies: sigmaMin, sigmaMax, numScales, alpha, beta, C, threshold
+%   normalize      normalise image intensity to [0,1] before   default true
+%                  computing vesselness (disable for pre-normalised inputs)
+%   label_file     path to GT binary mask NIfTI for DSC eval   default '' (skip)
+%                  reports DSC before and after gap filling
+%   t_vessel       vesselness threshold for mask (overrides result.threshold) default from result
+%   t_resume       vesselness threshold to declare resume     default 0.8 * t_vessel
+%   t_break        vesselness level considered background     default 0.3 * t_vessel
 %   max_gap_mm     maximum gap distance to attempt bridging   default 8.0
 %   step_mm        flow integration step size (mm)            default 0.5
 %   alpha_blend    blend weight: F_flow vs v1 axis direction  default 0.60
@@ -43,22 +49,19 @@
 %   hu_vessel      expected HU of contrast-enhanced artery    default 250
 %   conf_auto      confidence threshold for auto-fill         default 0.65
 %   conf_review    confidence threshold to flag for review    default 0.35
-%   scales_mm      Frangi filter scales for Hessian (mm)      default [1 2 3]
 %   output_dir     directory for output files                 default './'
 
-function vessel_gap_filling(image_file, vesselness_file, varargin)
+function vessel_gap_filling(image_file, varargin)
 
 %% -----------------------------------------------------------------------
 % 0. Parse inputs
 % -----------------------------------------------------------------------
 p = inputParser;
-addRequired(p, 'image_file',     @ischar);
-addRequired(p, 'vesselness_file',@ischar);
-addParameter(p, 'alpha',        0.5);
-addParameter(p, 'beta',         0.5);
-addParameter(p, 't_vessel',     0.15);
-addParameter(p, 't_resume',     0.12);
-addParameter(p, 't_break',      0.05);
+addRequired(p,  'image_file', @ischar);
+addParameter(p, 'result_mat',   'tuneFrangi_result.mat');
+addParameter(p, 't_vessel',     []);    % filled from result below
+addParameter(p, 't_resume',     []);
+addParameter(p, 't_break',      []);
 addParameter(p, 'max_gap_mm',   8.0);
 addParameter(p, 'step_mm',      0.5);
 addParameter(p, 'alpha_blend',  0.60);
@@ -70,10 +73,41 @@ addParameter(p, 'w_hu',         0.25);
 addParameter(p, 'hu_vessel',    250);
 addParameter(p, 'conf_auto',    0.65);
 addParameter(p, 'conf_review',  0.35);
-addParameter(p, 'scales_mm',    [1 2 3]);
+addParameter(p, 'normalize',    true);
+addParameter(p, 'label_file',   '');    % optional GT mask for DSC evaluation
 addParameter(p, 'output_dir',   './');
-parse(p, image_file, vesselness_file, varargin{:});
+parse(p, image_file, varargin{:});
 opt = p.Results;
+
+%% -----------------------------------------------------------------------
+% 0b. Load Frangi parameters (fall back to Frangi 1998 defaults if absent)
+% -----------------------------------------------------------------------
+FRANGI_DEFAULTS = struct('sigmaMin', 1.0, 'sigmaMax', 4.0, 'numScales', 4, ...
+                         'alpha', 0.5, 'beta', 0.5, 'C', 0.25, 'threshold', 0.15);
+
+if exist(opt.result_mat, 'file')
+    fprintf('=== Loading Frangi parameters from %s ===\n', opt.result_mat);
+    r  = load(opt.result_mat, 'result');
+    fr = r.result;
+else
+    warning('vessel_gap_filling:noResultMat', ...
+        'Result file ''%s'' not found — using Frangi 1998 defaults.', opt.result_mat);
+    fr = FRANGI_DEFAULTS;
+end
+
+opt.alpha     = fr.alpha;
+opt.beta      = fr.beta;
+opt.C         = fr.C;
+opt.sigmas_mm = exp(linspace(log(fr.sigmaMin), log(fr.sigmaMax), fr.numScales));
+
+if isempty(opt.t_vessel), opt.t_vessel = fr.threshold;        end
+if isempty(opt.t_resume), opt.t_resume = 0.80 * opt.t_vessel; end
+if isempty(opt.t_break),  opt.t_break  = 0.30 * opt.t_vessel; end
+
+fprintf('   sigmas_mm  : %s\n', num2str(opt.sigmas_mm, '%.2f  '));
+fprintf('   alpha=%.4f  beta=%.4f  C=%.4f\n', opt.alpha, opt.beta, opt.C);
+fprintf('   t_vessel=%.4f  t_resume=%.4f  t_break=%.4f\n', ...
+        opt.t_vessel, opt.t_resume, opt.t_break);
 
 fprintf('=== Vessel gap filling: gradient-guided fast marching ===\n');
 if ~exist(opt.output_dir, 'dir'), mkdir(opt.output_dir); end
@@ -81,14 +115,19 @@ if ~exist(opt.output_dir, 'dir'), mkdir(opt.output_dir); end
 %% -----------------------------------------------------------------------
 % 1. Load volumes
 % -----------------------------------------------------------------------
-fprintf('[1/9] Loading volumes...\n');
+fprintf('[1/9] Loading image volume...\n');
 
-nii_img = niftiread(image_file);
 info_img = niftiinfo(image_file);
-I = double(nii_img);
+I        = double(niftiread(image_file));
 
-nii_ves = niftiread(vesselness_file);
-V = double(nii_ves);
+% Per-volume normalisation to [0,1] (matches tuneFrangi training convention)
+if opt.normalize
+    lo = min(I(:));  hi = max(I(:));
+    if hi > lo, I = (I - lo) / (hi - lo); end
+    fprintf('   Normalised intensity to [0, 1].\n');
+else
+    fprintf('   Normalisation skipped (normalize=false).\n');
+end
 
 % Voxel size in mm [dx, dy, dz]
 vox = abs(diag(info_img.Transform.T(1:3,1:3)))';
@@ -96,42 +135,47 @@ sz  = size(I);
 fprintf('   Volume size : %d x %d x %d voxels\n', sz(1), sz(2), sz(3));
 fprintf('   Voxel size  : %.3f x %.3f x %.3f mm\n', vox(1), vox(2), vox(3));
 
+% Optional ground-truth label mask
+GT = [];
+if ~isempty(opt.label_file)
+    GT = niftiread(opt.label_file) > 0;
+    assert(isequal(size(GT), sz), ...
+        'Label mask size %s does not match image size %s.', ...
+        mat2str(size(GT)), mat2str(sz));
+    fprintf('   GT label loaded: %d vessel voxels (%.1f%%)\n', ...
+            sum(GT(:)), 100*mean(GT(:)));
+end
+
 %% -----------------------------------------------------------------------
 % 2. Compute Hessian eigenvalues and eigenvectors at dominant scale
 % -----------------------------------------------------------------------
 fprintf('[2/9] Computing multi-scale Hessian (scales: %s mm)...\n', ...
-    num2str(opt.scales_mm));
+    num2str(opt.sigmas_mm, '%.2f  '));
 
 % Allocate arrays for scale-aggregated outputs
 lam1 = zeros(sz); lam2 = zeros(sz); lam3 = zeros(sz);
-v1   = zeros([sz 3]);   % vessel axis eigenvector (corresponding to lam1)
-A_map = zeros(sz);
-B_map = zeros(sz);
+v1        = zeros([sz 3]);
+A_map     = zeros(sz);
+B_map     = zeros(sz);
 V_scale_max = zeros(sz);
 
-for s = opt.scales_mm
-    sigma = s;                              % sigma in mm -> voxels below
-    sig_vox = sigma ./ vox;                 % [sx sy sz] in voxels
+for s = opt.sigmas_mm
+    sig_vox = s ./ vox;   % sigma in voxels per axis
 
-    % Scale-normalised Gaussian second derivatives
-    [L1s, L2s, L3s, ev1s] = hessian_eigvals(I, sig_vox, sigma);
-
-    % Sort by absolute magnitude: |lam1| <= |lam2| <= |lam3|
+    [L1s, L2s, L3s, ev1s] = hessian_eigvals(I, sig_vox, s);
     [L1s, L2s, L3s, ev1s] = sort_eigenvalues(L1s, L2s, L3s, ev1s);
 
-    % Frangi factors at this scale
     RA = abs(L2s) ./ (abs(L3s) + 1e-9);
     RB = abs(L1s) ./ (sqrt(abs(L2s) .* abs(L3s)) + 1e-9);
-    S  = sqrt(L1s.^2 + L2s.^2 + L3s.^2);
+    S2 = L1s.^2 + L2s.^2 + L3s.^2;
 
     As = 1 - exp(-RA.^2 / (2 * opt.alpha^2));
-    Bs = exp( -RB.^2 / (2 * opt.beta^2));
-    Cs = 1 - exp(-S.^2  / (2 * (max(S(:))/2)^2));
+    Bs =     exp(-RB.^2 / (2 * opt.beta^2));
+    Cs = 1 - exp(-S2    / (2 * opt.C^2));     % C loaded from tuneFrangi result
 
     Vs = As .* Bs .* Cs;
-    Vs(L2s > 0 | L3s > 0) = 0;  % vessel condition: lam2,lam3 < 0
+    Vs(L2s > 0 | L3s > 0) = 0;
 
-    % Keep values at scale of maximum response
     update = Vs > V_scale_max;
     V_scale_max(update) = Vs(update);
     lam1(update) = L1s(update);
@@ -146,8 +190,11 @@ for s = opt.scales_mm
         v1(:,:,:,d) = tmp;
     end
 end
-clear L1s L2s L3s Vs As Bs Cs RA RB S update ev1s;
-fprintf('   Hessian complete.\n');
+clear L1s L2s L3s Vs As Bs Cs RA RB S2 update ev1s;
+
+% Vesselness map derived entirely from loaded Frangi parameters
+V = V_scale_max;
+fprintf('   Hessian complete.  vesselness range [%.4f, %.4f]\n', min(V(:)), max(V(:)));
 
 %% -----------------------------------------------------------------------
 % 3. Compute spatial gradients of A and B
@@ -197,8 +244,15 @@ cost_vol = max(1 - V_combined, 1e-3);  % invert: low cost = likely vessel
 % -----------------------------------------------------------------------
 fprintf('[5/9] Thresholding and skeletonising...\n');
 
-binary_mask = V > opt.t_vessel;
-binary_mask = bwareaopen(binary_mask, 50);  % remove small islands
+binary_vesselness = V > opt.t_vessel;   % kept for output and pre-fill DSC
+binary_mask = bwareaopen(binary_vesselness, 50);  % remove small islands
+
+% Pre-fill DSC against GT (if supplied)
+dsc_pre = NaN;
+if ~isempty(GT)
+    dsc_pre = dice_coeff(binary_mask, GT);
+    fprintf('   DSC (binarized vesselness vs GT) : %.4f\n', dsc_pre);
+end
 
 % 3D thinning to 1-voxel-wide skeleton
 skeleton = bwskel(binary_mask, 'MinBranchLength', 3);
@@ -330,30 +384,63 @@ fprintf('   Auto-filled: %d  |  Flagged: %d  |  Rejected: %d\n', ...
 % -----------------------------------------------------------------------
 fprintf('[9/9] Saving outputs...\n');
 
+nii_hdr           = info_img;
+nii_hdr.Filename  = '';   % suppress stale path warnings
+
+% Post-fill DSC against GT (if supplied)
+dsc_post = NaN;
+if ~isempty(GT)
+    dsc_post = dice_coeff(binary_mask, GT);
+    fprintf('\n── DSC evaluation ──────────────────────────────\n');
+    fprintf('   Before gap filling (binarized vesselness) : %.4f\n', dsc_pre);
+    fprintf('   After  gap filling                        : %.4f\n', dsc_post);
+    fprintf('   Improvement                               : %+.4f\n', dsc_post - dsc_pre);
+    fprintf('────────────────────────────────────────────────\n\n');
+end
+
+% vesselness.nii.gz
+ves_hdr          = nii_hdr;
+ves_hdr.Datatype = 'single';
+ves_file         = fullfile(opt.output_dir, 'vesselness.nii.gz');
+niftiwrite(single(V),                  ves_file, ves_hdr, 'Compressed', true);
+
+% binary_vesselness.nii.gz
+bv_hdr          = nii_hdr;
+bv_hdr.Datatype = 'uint8';
+bv_file         = fullfile(opt.output_dir, 'binary_vesselness.nii.gz');
+niftiwrite(uint8(binary_vesselness),   bv_file,  bv_hdr,  'Compressed', true);
+
 % filled_mask.nii.gz
-out_mask = info_img;
-out_mask.Filename = fullfile(opt.output_dir, 'filled_mask.nii.gz');
-out_mask.Datatype = 'uint8';
-niftiwrite(uint8(binary_mask), out_mask.Filename, out_mask, 'Compressed', true);
+fm_hdr          = nii_hdr;
+fm_hdr.Datatype = 'uint8';
+fm_file         = fullfile(opt.output_dir, 'filled_mask.nii.gz');
+niftiwrite(uint8(binary_mask),         fm_file,  fm_hdr,  'Compressed', true);
 
 % gap_report.mat
 report_file = fullfile(opt.output_dir, 'gap_report.mat');
-save(report_file, 'gap_candidates', 'opt');
+save(report_file, 'gap_candidates', 'opt', 'dsc_pre', 'dsc_post');
 
 % 3D Slicer FCSV markup for review cases
 fcsv_file = fullfile(opt.output_dir, 'gap_markers.fcsv');
 write_fcsv(gap_candidates, fcsv_file, vox, info_img);
 
 fprintf('=== Done ===\n');
-fprintf('   filled_mask.nii.gz  -> %s\n', out_mask.Filename);
-fprintf('   gap_report.mat      -> %s\n', report_file);
-fprintf('   gap_markers.fcsv    -> %s\n', fcsv_file);
+fprintf('   vesselness.nii.gz        -> %s\n', ves_file);
+fprintf('   binary_vesselness.nii.gz -> %s\n', bv_file);
+fprintf('   filled_mask.nii.gz       -> %s\n', fm_file);
+fprintf('   gap_report.mat           -> %s\n', report_file);
+fprintf('   gap_markers.fcsv         -> %s\n', fcsv_file);
 end
 
 
 %% =======================================================================
 % LOCAL FUNCTIONS
 % =======================================================================
+
+function d = dice_coeff(pred, gt)
+pred = logical(pred(:));  gt = logical(gt(:));
+d    = 2*sum(pred & gt) / (sum(pred) + sum(gt) + 1e-8);
+end
 
 function [L1, L2, L3, ev1] = hessian_eigvals(I, sig_vox, sigma_mm)
 %HESSIAN_EIGVALS Compute scale-normalised Hessian eigenvalues and
@@ -449,21 +536,19 @@ end
 
 function [L1, L2, L3, ev1] = sort_eigenvalues(L1, L2, L3, ev1)
 %SORT_EIGENVALUES Ensure |L1| <= |L2| <= |L3| everywhere.
-% Simple insertion sort across the three values per voxel.
-% This is a no-op if hessian_eigvals already sorted them.
-% Included for safety when called with pre-sorted inputs.
-absL = cat(4, abs(L1), abs(L2), abs(L3));
-[~, ord] = sort(absL, 4);
-Lall = cat(4, L1, L2, L3);
-Lsorted = zeros(size(Lall));
-for d = 1:3
-    for src = 1:3
-        mask = ord(:,:,:,d) == src;
-        tmp = Lsorted(:,:,:,d);
-        tmp(mask) = Lall(:,:,:,src);  % note: simplified, works for src==d
-        Lsorted(:,:,:,d) = tmp;
-    end
-end
+sz   = size(L1);
+nvox = prod(sz);
+
+% Gather: for each voxel, reorder [L1 L2 L3] by ascending |eigenvalue|
+Lall   = reshape(cat(4, L1, L2, L3), nvox, 3);   % [nvox × 3]
+absL   = abs(Lall);
+[~, ord] = sort(absL, 2);                          % [nvox × 3] col-permutation
+
+% Vectorised index gather: Lsorted(i,d) = Lall(i, ord(i,d))
+row_idx  = repmat((1:nvox)', 1, 3);
+lin      = sub2ind([nvox, 3], row_idx, ord);
+Lsorted  = reshape(Lall(lin), [sz 3]);
+
 L1 = Lsorted(:,:,:,1);
 L2 = Lsorted(:,:,:,2);
 L3 = Lsorted(:,:,:,3);
