@@ -73,12 +73,12 @@ fprintf('  Global S_max = %.4f  →  C_init = %.4f\n', S_max_global, C_init);
 %% ── 3. Optimisation setup ────────────────────────────────────────────────
 %  Unconstrained parameters in log-space:
 %    x(1) = log(sigmaMin)   init: log(1.0)
-%    x(2) = log(sigmaMax)   init: log(4.0)
+%    x(2) = log(sigmaMax)   init: log(5.0)
 %    x(3) = log(alpha)      init: log(0.5)
 %    x(4) = log(beta)       init: log(0.5)
 %    x(5) = log(C)          init: log(C_init)
 
-x0 = [log(1.0), log(4.0), log(0.5), log(0.5), log(C_init + 1e-8)];
+x0 = [log(1.0), log(5.0), log(0.5), log(0.5), log(C_init + 1e-8)];
 
 fprintf('\n=== Starting Nelder-Mead optimisation (%d patches, %d scales) ===\n', ...
         N, NUM_SCALES);
