@@ -241,12 +241,12 @@ function [Lxx, Lxy, Lxz, Lyy, Lyz, Lzz] = gaussHessian3D(vol, sigma)
     G   = exp(-(x.^2 + y.^2 + z.^2) / (2*sigma^2)) / (2*pi*sigma^2)^(3/2);
     sc  = sigma^2;
 
-    Lxx = sc * imfilter(vol, single(G .* (x.^2/sigma^4 - 1/sigma^2)), 'replicate');
-    Lyy = sc * imfilter(vol, single(G .* (y.^2/sigma^4 - 1/sigma^2)), 'replicate');
-    Lzz = sc * imfilter(vol, single(G .* (z.^2/sigma^4 - 1/sigma^2)), 'replicate');
-    Lxy = sc * imfilter(vol, single(G .* (x.*y/sigma^4)),              'replicate');
-    Lxz = sc * imfilter(vol, single(G .* (x.*z/sigma^4)),              'replicate');
-    Lyz = sc * imfilter(vol, single(G .* (y.*z/sigma^4)),              'replicate');
+    Lxx = single(sc * imfilter(double(vol), G .* (x.^2/sigma^4 - 1/sigma^2), 'replicate'));
+    Lyy = single(sc * imfilter(double(vol), G .* (y.^2/sigma^4 - 1/sigma^2), 'replicate'));
+    Lzz = single(sc * imfilter(double(vol), G .* (z.^2/sigma^4 - 1/sigma^2), 'replicate'));
+    Lxy = single(sc * imfilter(double(vol), G .* (x.*y/sigma^4),              'replicate'));
+    Lxz = single(sc * imfilter(double(vol), G .* (x.*z/sigma^4),              'replicate'));
+    Lyz = single(sc * imfilter(double(vol), G .* (y.*z/sigma^4),              'replicate'));
 end
 
 % -------------------------------------------------------------------------
