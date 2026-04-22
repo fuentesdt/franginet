@@ -121,59 +121,51 @@ end
 numScales_opt = ns_candidates(best_ns_idx);
 fprintf('  Best numScales = %d\n', numScales_opt);
 
-%% ── 5. Compute vesselness with optimal params; sweep threshold ───────────
-fprintf('\n=== Threshold sweep (hard-Dice) ===\n');
-sigmas = exp(linspace(log(sigmaMin_opt), log(sigmaMax_opt), numScales_opt));
-
-allV   = cell(N, 1);
-for i = 1:N
-    allV{i} = frangiVesselness3D(imgs{i}, sigmas, alpha_opt, beta_opt, C_opt);
-end
-
+%% ── 5. Compute vesselness for x0 and x_opt; sweep thresholds for both ────
+fprintf('\n=== Threshold sweep: x0 (initial) vs x_opt (optimised) ===\n');
 thresholds = 0.01 : 0.01 : 0.99;
-meanDice_thr = zeros(size(thresholds));
-for ti = 1:numel(thresholds)
-    thr = thresholds(ti);
-    d   = zeros(N, 1);
-    for i = 1:N
-        d(i) = diceCoeff(allV{i} >= thr, masks{i});
-    end
-    meanDice_thr(ti) = mean(d);
-end
 
-[bestDice, best_ti] = max(meanDice_thr);
-thr_opt = thresholds(best_ti);
+[allV_x0,  thr_x0,  bestDice_x0,  dice_hard_x0]  = evalParams(x0,    imgs, masks, NUM_SCALES, thresholds);
+[allV_opt, thr_opt, bestDice_opt, dice_hard_opt] = evalParams(x_opt, imgs, masks, numScales_opt, thresholds);
 
-fprintf('  Optimal threshold = %.2f   mean hard-Dice = %.4f\n', thr_opt, bestDice);
+fprintf('  x0   threshold=%.2f  mean hard-Dice=%.4f\n', thr_x0,  bestDice_x0);
+fprintf('  x_opt threshold=%.2f  mean hard-Dice=%.4f\n', thr_opt, bestDice_opt);
 
-%% ── 6. Per-patch results table ───────────────────────────────────────────
-fprintf('\n%s\n', repmat('-', 1, 52));
-fprintf('  %-6s  %-10s  %-10s  %-10s\n', 'Patch', 'SoftDice', 'HardDice', 'VesselVox%');
-fprintf('%s\n', repmat('-', 1, 52));
-dice_hard = zeros(N, 1);
+%% ── 6. Per-patch comparison table ───────────────────────────────────────
+SEP = repmat('-', 1, 72);
+fprintf('\n%s\n', SEP);
+fprintf('  %-6s  %-12s  %-12s  %-12s  %-12s\n', ...
+        'Patch', 'SoftDice_x0', 'SoftDice_opt', 'HardDice_x0', 'HardDice_opt');
+fprintf('%s\n', SEP);
 for i = 1:N
-    pred        = allV{i} >= thr_opt;
-    dice_hard(i) = diceCoeff(pred, masks{i});
-    softD       = softDice1(allV{i}, single(masks{i}));
-    fprintf('  %-6d  %-10.4f  %-10.4f  %-10.1f\n', ...
-            i, softD, dice_hard(i), 100*mean(pred(:)));
+    sd0  = softDice1(allV_x0{i},  single(masks{i}));
+    sdOp = softDice1(allV_opt{i}, single(masks{i}));
+    fprintf('  %-6d  %-12.4f  %-12.4f  %-12.4f  %-12.4f\n', ...
+            i, sd0, sdOp, dice_hard_x0(i), dice_hard_opt(i));
 end
-fprintf('%s\n', repmat('-', 1, 52));
-fprintf('  MEAN    %-10.4f  %-10.4f\n', -fval, mean(dice_hard));
-fprintf('%s\n', repmat('-', 1, 52));
+fprintf('%s\n', SEP);
+fprintf('  %-6s  %-12.4f  %-12.4f  %-12.4f  %-12.4f\n', 'MEAN', ...
+        -negSoftDice(x0, imgs, masks, NUM_SCALES), -fval, ...
+        mean(dice_hard_x0), mean(dice_hard_opt));
+fprintf('%s\n', SEP);
+fprintf('  Improvement: soft-Dice %+.4f   hard-Dice %+.4f\n', ...
+        (-fval) - (-negSoftDice(x0, imgs, masks, NUM_SCALES)), ...
+        mean(dice_hard_opt) - mean(dice_hard_x0));
 
 %% ── 7. Save results ──────────────────────────────────────────────────────
 result = struct( ...
-    'sigmaMin',    sigmaMin_opt, ...
-    'sigmaMax',    sigmaMax_opt, ...
-    'numScales',   numScales_opt, ...
-    'alpha',       alpha_opt, ...
-    'beta',        beta_opt, ...
-    'C',           C_opt, ...
-    'threshold',   thr_opt, ...
-    'meanSoftDice',-fval, ...
-    'meanHardDice', mean(dice_hard), ...
-    'dicePerPatch', dice_hard);
+    'sigmaMin',       sigmaMin_opt, ...
+    'sigmaMax',       sigmaMax_opt, ...
+    'numScales',      numScales_opt, ...
+    'alpha',          alpha_opt, ...
+    'beta',           beta_opt, ...
+    'C',              C_opt, ...
+    'threshold',      thr_opt, ...
+    'meanSoftDice',  -fval, ...
+    'meanHardDice',   mean(dice_hard_opt), ...
+    'dicePerPatch',   dice_hard_opt, ...
+    'x0_meanHardDice', mean(dice_hard_x0), ...
+    'x0_dicePerPatch', dice_hard_x0);
 save(RESULT_MAT, 'result');
 fprintf('\nResults saved to %s\n', RESULT_MAT);
 
@@ -197,6 +189,39 @@ function val = negSoftDice(x, imgs, masks, numScales)
         d(i) = softDice1(V, single(masks{i}));
     end
     val = -mean(d);
+end
+
+% -------------------------------------------------------------------------
+function [allV, thr_best, dice_best, dice_hard] = evalParams(x, imgs, masks, numScales, thresholds)
+% Compute vesselness for all patches, find best hard-Dice threshold.
+    sigmaMin = exp(x(1));
+    sigmaMax = max(exp(x(2)), sigmaMin * 1.01);
+    alpha    = exp(x(3));
+    beta     = exp(x(4));
+    C        = exp(x(5));
+    sigmas   = exp(linspace(log(sigmaMin), log(sigmaMax), numScales));
+
+    N    = numel(imgs);
+    allV = cell(N, 1);
+    for i = 1:N
+        allV{i} = frangiVesselness3D(imgs{i}, sigmas, alpha, beta, C);
+    end
+
+    meanDice_thr = zeros(size(thresholds));
+    for ti = 1:numel(thresholds)
+        d = zeros(N, 1);
+        for i = 1:N
+            d(i) = diceCoeff(allV{i} >= thresholds(ti), masks{i});
+        end
+        meanDice_thr(ti) = mean(d);
+    end
+
+    [dice_best, best_ti] = max(meanDice_thr);
+    thr_best  = thresholds(best_ti);
+    dice_hard = zeros(N, 1);
+    for i = 1:N
+        dice_hard(i) = diceCoeff(allV{i} >= thr_best, masks{i});
+    end
 end
 
 % -------------------------------------------------------------------------
