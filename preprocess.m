@@ -25,7 +25,7 @@
 clear; clc;
 
 %% ── Configuration ────────────────────────────────────────────────────────
-IN_CSV  = 'fullpath.csv';    % full-path manifest (input)
+IN_CSV  = 'vesseltraininglr.csv';    % full-path manifest (input)
 OUT_DIR = 'preprocessed';    % root output directory
 IMG_SUBDIR = 'images';
 MSK_SUBDIR = 'masks';
@@ -42,7 +42,7 @@ fid = fopen(outCsvPath, 'w');
 
 %% ── Read input CSV ───────────────────────────────────────────────────────
 fprintf('Reading %s ...\n', IN_CSV);
-T = readcell(IN_CSV, 'Delimiter', ',', 'NumHeaderLines', 0);
+T = readcell(IN_CSV, 'Delimiter', ',', 'NumHeaderLines', 1);
 N = size(T, 1);
 fprintf('  %d samples found.\n\n', N);
 
@@ -109,7 +109,7 @@ for i = 1:N
 
     %% Write NIfTIs
     niftiwrite(imgCrop,    imgOutPath, imgInfoCrop, 'Compressed', true);
-    niftiwrite(vesselMask, mskOutPath, lblInfoCrop, 'Compressed', true);
+    niftiwrite(cast(vesselMask, lblInfoCrop.Datatype), mskOutPath, lblInfoCrop, 'Compressed', true);
 
     fprintf('  -> %s\n', imgOutPath);
     fprintf('  -> %s\n\n', mskOutPath);

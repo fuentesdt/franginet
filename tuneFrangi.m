@@ -29,7 +29,7 @@
 clear; clc;
 
 %% ── Configuration ────────────────────────────────────────────────────────
-CSV_FILE   = fullfile('bezier_training', 'manifest.csv');
+CSV_FILE   = fullfile('preprocessed', 'manifest.csv');
 NUM_SCALES = 4;        % fixed for optimisation; swept post-hoc
 MAX_ITER   = 400;      % fminsearch MaxFunEvals / MaxIter
 RESULT_MAT = 'tuneFrangi_result.mat';
