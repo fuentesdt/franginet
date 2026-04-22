@@ -1,4 +1,5 @@
-%% tuneBezierTraining.m
+%% for iii in $(seq -f '%03g' 1 12); do vglrun itksnap -g bezier_training/images/patch_$iii.nii  -s bezier_training/masks/mask_$iii.nii ;done
+
 %  -----------------------------------------------------------------------
 %  Generate N synthetic 32^3 NIfTI training patches from random 3-D cubic
 %  Bezier curves.  Each patch has a matching binary mask at the known curve
@@ -21,8 +22,8 @@ clear; clc;
 N               = 12;           % number of patches
 PATCH_SZ        = [32 32 32];   % voxels
 SNR             = 10;           % signal peak / noise std
-N_CURVES_RANGE  = [5 10];       % random number of Bezier curves per patch
-RADIUS_RANGE    = [1.0 5.0];    % per-curve tube radius range (voxels)
+N_CURVES_RANGE  = [1 5];       % random number of Bezier curves per patch
+RADIUS_RANGE    = [1.0 2.0];    % per-curve tube radius range (voxels)
 N_BEZIER_T      = 2000;         % Bezier sample density (≥ 50 × diagonal)
 OUT_DIR         = 'bezier_training';
 rng(42);                        % reproducible
