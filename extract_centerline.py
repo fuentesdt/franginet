@@ -1,11 +1,12 @@
 """
-Extract vessel centerline from a binary NIfTI segmentation.
+Extract vessel centerlines from all Frangi vesselness maps produced by
+porcine.m.  Reads Processed/manifest.csv, locates the matching
+.frangi.nii.gz file for each row, thresholds at THRESHOLD, builds a
+surface via marching cubes, and runs the VMTK centerline pipeline.
 
-Two backends are tried in order:
-  1. vtkvmtkComputationalGeometryPython  (C++ VMTK binding — preferred)
-  2. ExtractCenterline logic node        (SlicerVMTK Python wrapper)
-
-Endpoints are auto-detected via PCA on the surface point cloud.
+Outputs (per row, same directory as the .frangi file):
+  {timepoint}.centerline.vtp        — centerline polydata (ParaView)
+  {timepoint}.centerline_mask.vti   — thresholded binary mask in RAS
 
 Run with:
   /opt/apps/slicer/Slicer-5.10.0-linux-amd64/Slicer \
@@ -13,28 +14,24 @@ Run with:
       --python-script /home/fuentes/github/franginet/extract_centerline.py
 """
 
+import csv
 import os
 import sys
 import slicer
 import vtk
 import numpy as np
 
-# ── paths ──────────────────────────────────────────────────────────────────────
+# ── config ────────────────────────────────────────────────────────────────────
 REPO_DIR  = "/home/fuentes/github/franginet"
-MASK_PATH = os.path.join(REPO_DIR, "bezier_training", "masks", "mask_001.nii")
-OUT_DIR        = os.path.join(REPO_DIR, "bezier_training", "centerlines")
-OUT_VTP        = os.path.join(OUT_DIR, "centerline_001.vtp")
-OUT_MASK_VTI   = os.path.join(OUT_DIR, "mask_001_ras.vti")  # mask resampled into RAS, aligns with VTP in ParaView
-OUT_FCSV       = os.path.join(OUT_DIR, "centerline_001.fcsv")
-
-os.makedirs(OUT_DIR, exist_ok=True)
+MANIFEST  = os.path.join(REPO_DIR, "Processed", "manifest.csv")
+THRESHOLD = 0.44   # match result.threshold from tuneFrangi_result.mat
 
 
 def log(msg):
     print(f"[centerline] {msg}", flush=True)
 
 
-# ── helpers ────────────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def polydata_points(pd):
     n = pd.GetNumberOfPoints()
@@ -42,7 +39,7 @@ def polydata_points(pd):
 
 
 def pca_endpoints(pts):
-    """Two surface points at opposite ends of the principal axis."""
+    """Two surface points at opposite ends of the first principal axis."""
     centroid = pts.mean(axis=0)
     centered = pts - centroid
     _, _, Vt = np.linalg.svd(centered, full_matrices=False)
@@ -68,253 +65,252 @@ def save_vtp(pd, path):
     w = vtk.vtkXMLPolyDataWriter()
     w.SetFileName(path)
     w.SetInputData(pd)
-    w.SetDataModeToAscii()   # avoid zlib-compressed appended binary; ParaView 5.11 parses this fine
+    w.SetDataModeToAscii()   # plain-text XML; avoids zlib-encoding issues in ParaView 5.11
     w.Write()
 
 
-# ── 1. load label map ──────────────────────────────────────────────────────────
-log(f"Loading mask: {MASK_PATH}")
-labelMapNode = slicer.util.loadLabelVolume(MASK_PATH)
-if labelMapNode is None:
-    sys.stderr.write(f"ERROR: could not load {MASK_PATH}\n")
-    slicer.util.exit(1)
+def reslice_to_ras(imageData, ijkToRas, spacing):
+    """Return a vtkImageData resampled onto an axis-aligned RAS grid."""
+    rasToIjk = vtk.vtkMatrix4x4()
+    vtk.vtkMatrix4x4.Invert(ijkToRas, rasToIjk)
+
+    dims = imageData.GetDimensions()
+    m = np.array([[ijkToRas.GetElement(r, c) for c in range(4)] for r in range(4)])
+    corners = np.array([
+        [i, j, k, 1.0]
+        for i in (0, dims[0] - 1)
+        for j in (0, dims[1] - 1)
+        for k in (0, dims[2] - 1)
+    ])
+    corners_ras = (m @ corners.T).T[:, :3]
+    rasMin = corners_ras.min(axis=0)
+    rasMax = corners_ras.max(axis=0)
+    spacing = np.asarray(spacing)
+    extent  = [int(round((rasMax[ax] - rasMin[ax]) / spacing[ax])) for ax in range(3)]
+
+    xform = vtk.vtkMatrixToLinearTransform()
+    xform.SetInput(rasToIjk)
+
+    reslice = vtk.vtkImageReslice()
+    reslice.SetInputData(imageData)
+    reslice.SetResliceTransform(xform)
+    reslice.SetInterpolationModeToNearestNeighbor()
+    reslice.SetOutputOrigin(rasMin.tolist())
+    reslice.SetOutputSpacing(spacing.tolist())
+    reslice.SetOutputExtent(0, extent[0], 0, extent[1], 0, extent[2])
+    reslice.Update()
+    return reslice.GetOutput()
 
 
-# ── 2. labelmap → segmentation → closed surface ───────────────────────────────
-log("Converting labelmap → segmentation → closed surface...")
-segNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-    labelMapNode, segNode
-)
-segNode.CreateClosedSurfaceRepresentation()
+# ── per-file pipeline ─────────────────────────────────────────────────────────
 
-seg = segNode.GetSegmentation()
-if seg.GetNumberOfSegments() == 0:
-    sys.stderr.write("ERROR: segmentation is empty.\n")
-    slicer.util.exit(1)
-log(f"  segment id: {seg.GetNthSegmentID(0)}")
+def process_one(frangi_path, out_vtp, out_vti):
+    """Full pipeline for a single frangi vesselness volume."""
 
+    # 1. load frangi volume into Slicer
+    log(f"  Loading: {frangi_path}")
+    frangiNode = slicer.util.loadVolume(frangi_path)
+    if frangiNode is None:
+        raise RuntimeError(f"slicer.util.loadVolume returned None for {frangi_path}")
 
-# ── 3. segmentation → model node ──────────────────────────────────────────────
-log("Exporting surface to model node...")
-shNode       = slicer.mrmlScene.GetSubjectHierarchyNode()
-exportFolder = shNode.CreateFolderItem(shNode.GetSceneItemID(), "ModelExport")
-slicer.modules.segmentations.logic().ExportAllSegmentsToModels(segNode, exportFolder)
+    imageData = frangiNode.GetImageData()
+    ijkToRas  = vtk.vtkMatrix4x4()
+    frangiNode.GetIJKToRASMatrix(ijkToRas)
+    spacing = frangiNode.GetSpacing()
+    log(f"  Volume: {imageData.GetDimensions()}  spacing: {[round(s,3) for s in spacing]}")
 
-childIds = vtk.vtkIdList()
-shNode.GetItemChildren(exportFolder, childIds, True)
-modelNode = None
-for i in range(childIds.GetNumberOfIds()):
-    node = shNode.GetItemDataNode(childIds.GetId(i))
-    if node and node.IsA("vtkMRMLModelNode"):
-        modelNode = node
-        break
+    # 2. threshold → binary vtkImageData (still in IJK space)
+    thresh = vtk.vtkImageThreshold()
+    thresh.SetInputData(imageData)
+    thresh.ThresholdByUpper(THRESHOLD)
+    thresh.SetInValue(1)
+    thresh.SetOutValue(0)
+    thresh.SetOutputScalarTypeToUnsignedChar()
+    thresh.Update()
+    binaryIJK = thresh.GetOutput()
 
-if modelNode is None:
-    sys.stderr.write("ERROR: surface export produced no model nodes.\n")
-    slicer.util.exit(1)
+    nFg = int(np.sum(vtk.util.numpy_support.vtk_to_numpy(
+        binaryIJK.GetPointData().GetScalars())))
+    log(f"  Foreground voxels at threshold {THRESHOLD}: {nFg}")
+    if nFg == 0:
+        raise RuntimeError("No foreground voxels after thresholding — check THRESHOLD")
 
-nPts = modelNode.GetPolyData().GetNumberOfPoints()
-log(f"  surface: {nPts} points, {modelNode.GetPolyData().GetNumberOfCells()} cells")
-if nPts == 0:
-    sys.stderr.write("ERROR: exported surface is empty.\n")
-    slicer.util.exit(1)
+    # 3. marching cubes → surface in IJK, then transform to RAS
+    mc = vtk.vtkMarchingCubes()
+    mc.SetInputData(binaryIJK)
+    mc.SetValue(0, 0.5)
+    mc.Update()
 
+    xformFilter = vtk.vtkTransformPolyDataFilter()
+    xform = vtk.vtkTransform()
+    xform.SetMatrix(ijkToRas)
+    xformFilter.SetInputData(mc.GetOutput())
+    xformFilter.SetTransform(xform)
+    xformFilter.Update()
+    rawSurface = xformFilter.GetOutput()
+    log(f"  Marching cubes: {rawSurface.GetNumberOfPoints()} pts")
 
-# ── 4. prepare surface for VMTK ───────────────────────────────────────────────
-log("Pre-processing surface...")
+    if rawSurface.GetNumberOfPoints() == 0:
+        raise RuntimeError("Marching cubes produced empty surface")
 
-# Merge duplicate/coincident points left by marching cubes
-cleaner = vtk.vtkCleanPolyData()
-cleaner.SetInputData(modelNode.GetPolyData())
-cleaner.SetTolerance(0.0)
-cleaner.Update()
+    # 4. clean → fill holes → subdivide → smooth
+    cleaner = vtk.vtkCleanPolyData()
+    cleaner.SetInputData(rawSurface)
+    cleaner.SetTolerance(0.0)
+    cleaner.Update()
 
-# Triangulate (required by all downstream filters)
-tri = vtk.vtkTriangleFilter()
-tri.SetInputData(cleaner.GetOutput())
-tri.Update()
+    tri = vtk.vtkTriangleFilter()
+    tri.SetInputData(cleaner.GetOutput())
+    tri.Update()
 
-# Keep only the largest connected component
-conn = vtk.vtkPolyDataConnectivityFilter()
-conn.SetInputData(tri.GetOutput())
-conn.SetExtractionModeToLargestRegion()
-conn.Update()
+    conn = vtk.vtkPolyDataConnectivityFilter()
+    conn.SetInputData(tri.GetOutput())
+    conn.SetExtractionModeToLargestRegion()
+    conn.Update()
 
-# Fill boundary holes so the surface is closed
-fill = vtk.vtkFillHolesFilter()
-fill.SetInputData(conn.GetOutput())
-fill.SetHoleSize(10000.0)
-fill.Update()
+    fill = vtk.vtkFillHolesFilter()
+    fill.SetInputData(conn.GetOutput())
+    fill.SetHoleSize(10000.0)
+    fill.Update()
 
-# Re-triangulate after hole filling
-tri2 = vtk.vtkTriangleFilter()
-tri2.SetInputData(fill.GetOutput())
-tri2.Update()
+    tri2 = vtk.vtkTriangleFilter()
+    tri2.SetInputData(fill.GetOutput())
+    tri2.Update()
 
-# Adaptive subdivision: splits any edge longer than the target length.
-# Unlike vtkLoopSubdivisionFilter this does NOT require a closed manifold.
-# Target 0.3 mm gives ~10× more faces than the raw 1 mm/vox marching-cubes
-# surface, which gives VMTK's Voronoi path-finder enough geometry to work with.
-subdiv = vtk.vtkAdaptiveSubdivisionFilter()
-subdiv.SetInputData(tri2.GetOutput())
-subdiv.SetMaximumEdgeLength(0.3)
-subdiv.Update()
+    subdiv = vtk.vtkAdaptiveSubdivisionFilter()
+    subdiv.SetInputData(tri2.GetOutput())
+    subdiv.SetMaximumEdgeLength(0.3)
+    subdiv.Update()
 
-# Smooth to remove staircase artefacts without displacing the vessel shape
-smoother = vtk.vtkWindowedSincPolyDataFilter()
-smoother.SetInputData(subdiv.GetOutput())
-smoother.SetNumberOfIterations(20)
-smoother.SetPassBand(0.1)
-smoother.NormalizeCoordinatesOn()
-smoother.Update()
+    smoother = vtk.vtkWindowedSincPolyDataFilter()
+    smoother.SetInputData(subdiv.GetOutput())
+    smoother.SetNumberOfIterations(20)
+    smoother.SetPassBand(0.1)
+    smoother.NormalizeCoordinatesOn()
+    smoother.Update()
 
-surface = smoother.GetOutput()
-log(f"  pre-processed: {surface.GetNumberOfPoints()} pts, "
-    f"{surface.GetNumberOfCells()} cells")
+    surface = smoother.GetOutput()
+    log(f"  Pre-processed surface: {surface.GetNumberOfPoints()} pts, "
+        f"{surface.GetNumberOfCells()} cells")
 
+    if surface.GetNumberOfPoints() == 0:
+        raise RuntimeError("Surface pre-processing produced empty result")
 
-# ── 5. PCA endpoint detection ─────────────────────────────────────────────────
-log("Detecting endpoints via PCA...")
-pts = polydata_points(surface)
-srcXYZ, tgtXYZ = pca_endpoints(pts)
-srcId = closest_point_id(surface, srcXYZ)
-tgtId = closest_point_id(surface, tgtXYZ)
-log(f"  source pt {srcId}: {srcXYZ.round(2)}")
-log(f"  target pt {tgtId}: {tgtXYZ.round(2)}")
+    # 5. PCA endpoint detection
+    pts = polydata_points(surface)
+    srcXYZ, tgtXYZ = pca_endpoints(pts)
+    srcId = closest_point_id(surface, srcXYZ)
+    tgtId = closest_point_id(surface, tgtXYZ)
+    log(f"  Source pt {srcId}: {srcXYZ.round(2)}")
+    log(f"  Target pt {tgtId}: {tgtXYZ.round(2)}")
 
+    # 6. centerline extraction (backend A → B fallback)
+    centerlinePolyData = None
 
-# ── 6. centerline extraction ───────────────────────────────────────────────────
-
-centerlinePolyData = None
-
-# ── backend A: vtkvmtkComputationalGeometryPython (C++ binding) ──────────────
-try:
-    import vtkvmtkComputationalGeometryPython as vtkvmtk
-    log("Backend: vtkvmtkComputationalGeometryPython")
-
-    clFilter = vtkvmtk.vtkvmtkPolyDataCenterlines()
-    clFilter.SetInputData(surface)
-    clFilter.SetSourceSeedIds(make_id_list(srcId))
-    clFilter.SetTargetSeedIds(make_id_list(tgtId))
-    clFilter.SetRadiusArrayName("MaximumInscribedSphereRadius")
-    clFilter.SetCostFunction("1/R")
-    clFilter.SetFlipNormals(False)
-    clFilter.SetAppendEndPointsToCenterlines(True)
-    clFilter.SetSimplifyVoronoi(False)
-    clFilter.Update()
-    centerlinePolyData = clFilter.GetOutput()
-    log(f"  result: {centerlinePolyData.GetNumberOfPoints()} pts")
-
-except ImportError:
-    log("vtkvmtkComputationalGeometryPython not available, trying ExtractCenterline...")
-
-except Exception as e:
-    log(f"vtkvmtk backend failed ({e}), trying ExtractCenterline...")
-
-
-# ── backend B: ExtractCenterlineLogic (SlicerVMTK wrapper) ───────────────────
-if centerlinePolyData is None or centerlinePolyData.GetNumberOfPoints() == 0:
     try:
-        import ExtractCenterline
-        log("Backend: ExtractCenterlineLogic")
+        import vtkvmtkComputationalGeometryPython as vtkvmtk
+        log("  Backend: vtkvmtkComputationalGeometryPython")
+        clFilter = vtkvmtk.vtkvmtkPolyDataCenterlines()
+        clFilter.SetInputData(surface)
+        clFilter.SetSourceSeedIds(make_id_list(srcId))
+        clFilter.SetTargetSeedIds(make_id_list(tgtId))
+        clFilter.SetRadiusArrayName("MaximumInscribedSphereRadius")
+        clFilter.SetCostFunction("1/R")
+        clFilter.SetFlipNormals(False)
+        clFilter.SetAppendEndPointsToCenterlines(True)
+        clFilter.SetSimplifyVoronoi(False)
+        clFilter.Update()
+        centerlinePolyData = clFilter.GetOutput()
+        log(f"  Centerline: {centerlinePolyData.GetNumberOfPoints()} pts")
+    except ImportError:
+        log("  vtkvmtkComputationalGeometryPython not available, trying ExtractCenterline...")
+    except Exception as e:
+        log(f"  vtkvmtk backend failed ({e}), trying ExtractCenterline...")
 
+    if centerlinePolyData is None or centerlinePolyData.GetNumberOfPoints() == 0:
+        import ExtractCenterline
+        log("  Backend: ExtractCenterlineLogic")
         ecLogic = ExtractCenterline.ExtractCenterlineLogic()
 
-        # Feed PCA endpoints as markups fiducials
         endpointsNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLMarkupsFiducialNode", "Endpoints"
-        )
+            "vtkMRMLMarkupsFiducialNode", "Endpoints")
         endpointsNode.AddControlPoint(vtk.vtkVector3d(*srcXYZ))
         endpointsNode.AddControlPoint(vtk.vtkVector3d(*tgtXYZ))
 
         centerlineModelNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLModelNode", "CenterlineModel"
-        )
+            "vtkMRMLModelNode", "CenterlineModel")
         voronoiModelNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLModelNode", "VoronoiDiagram"
-        )
+            "vtkMRMLModelNode", "VoronoiDiagram")
         centerlineCurveNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLMarkupsCurveNode", "CenterlineCurve"
-        )
+            "vtkMRMLMarkupsCurveNode", "CenterlineCurve")
 
+        # modelNode is no longer in scope; use a transient model node from surface
+        surfModelNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "Surface")
+        surfModelNode.SetAndObservePolyData(surface)
         ecLogic.extractCenterline(
-            modelNode,
-            endpointsNode,
-            centerlineModelNode,
-            voronoiModelNode,
-            centerlineCurveNode,
-        )
+            surfModelNode, endpointsNode,
+            centerlineModelNode, voronoiModelNode, centerlineCurveNode)
 
         centerlinePolyData = centerlineModelNode.GetPolyData()
-        log(f"  result: {centerlinePolyData.GetNumberOfPoints()} pts")
+        log(f"  Centerline: {centerlinePolyData.GetNumberOfPoints()} pts")
 
+    if centerlinePolyData is None or centerlinePolyData.GetNumberOfPoints() == 0:
+        raise RuntimeError("All backends returned empty centerline")
+
+    # 7. save centerline VTP
+    log(f"  Saving VTP  → {out_vtp}")
+    save_vtp(centerlinePolyData, out_vtp)
+
+    # 8. save thresholded binary mask as RAS-aligned VTI
+    log(f"  Saving VTI  → {out_vti}")
+    rasImage = reslice_to_ras(binaryIJK, ijkToRas, spacing)
+    vtiWriter = vtk.vtkXMLImageDataWriter()
+    vtiWriter.SetFileName(out_vti)
+    vtiWriter.SetInputData(rasImage)
+    vtiWriter.Write()
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+log(f"Reading manifest: {MANIFEST}")
+with open(MANIFEST, newline='') as f:
+    rows = list(csv.DictReader(f))
+log(f"  {len(rows)} rows\n")
+
+errors = []
+
+for row in rows:
+    subject  = row['subject_id']
+    session  = row['session']
+    tp       = row['timepoint']
+    img_path = row['image']
+
+    # derive frangi path from image path
+    frangi_path = img_path.replace('.raw.nii.gz', '.frangi.nii.gz')
+    if not os.path.exists(frangi_path):
+        log(f"SKIP {subject}/{session}/{tp}: {frangi_path} not found")
+        continue
+
+    out_dir = os.path.dirname(os.path.abspath(frangi_path))
+    out_vtp = os.path.join(out_dir, f"{tp}.centerline.vtp")
+    out_vti = os.path.join(out_dir, f"{tp}.centerline_mask.vti")
+
+    log(f"=== {subject} / {session} / {tp} ===")
+    try:
+        process_one(frangi_path, out_vtp, out_vti)
+        log(f"  OK\n")
     except Exception as e:
-        sys.stderr.write(f"ERROR: ExtractCenterline backend failed: {e}\n")
-        slicer.util.exit(1)
+        log(f"  ERROR: {e}\n")
+        errors.append(f"{subject}/{session}/{tp}: {e}")
+    finally:
+        slicer.mrmlScene.Clear(0)   # free memory between volumes
 
+# ── summary ───────────────────────────────────────────────────────────────────
+n_ok = len(rows) - len(errors)
+log(f"Finished: {n_ok}/{len(rows)} succeeded")
+if errors:
+    log(f"{len(errors)} error(s):")
+    for e in errors:
+        log(f"  {e}")
 
-if centerlinePolyData is None or centerlinePolyData.GetNumberOfPoints() == 0:
-    sys.stderr.write("ERROR: all backends returned empty centerline.\n")
-    slicer.util.exit(1)
-
-
-# ── 7. save centerline VTP ────────────────────────────────────────────────────
-log(f"Saving centerline VTP → {OUT_VTP}")
-save_vtp(centerlinePolyData, OUT_VTP)
-
-# ── 8. resample mask into axis-aligned RAS and write VTI ─────────────────────
-# The centerline VTP is in Slicer's RAS frame. slicer.util.saveNode writes
-# volumes via ITK in LPS (X/Y flipped), so we bypass ITK and reslice directly
-# into the same RAS grid using vtkImageReslice.
-log(f"Saving mask VTI (RAS-aligned) → {OUT_MASK_VTI}")
-
-ijkToRas = vtk.vtkMatrix4x4()
-labelMapNode.GetIJKToRASMatrix(ijkToRas)
-
-rasToIjk = vtk.vtkMatrix4x4()
-vtk.vtkMatrix4x4.Invert(ijkToRas, rasToIjk)
-
-# Compute tight RAS bounding box from the 8 IJK corners
-dims = labelMapNode.GetImageData().GetDimensions()
-m = np.array([[ijkToRas.GetElement(r, c) for c in range(4)] for r in range(4)])
-corners_ijk = np.array([
-    [i, j, k, 1.0]
-    for i in (0, dims[0] - 1)
-    for j in (0, dims[1] - 1)
-    for k in (0, dims[2] - 1)
-])
-corners_ras = (m @ corners_ijk.T).T[:, :3]
-rasMin = corners_ras.min(axis=0)
-rasMax = corners_ras.max(axis=0)
-
-spacing = np.array(labelMapNode.GetSpacing())
-extent  = [int(round((rasMax[ax] - rasMin[ax]) / spacing[ax])) for ax in range(3)]
-
-resliceXform = vtk.vtkMatrixToLinearTransform()
-resliceXform.SetInput(rasToIjk)
-
-reslice = vtk.vtkImageReslice()
-reslice.SetInputData(labelMapNode.GetImageData())
-reslice.SetResliceTransform(resliceXform)
-reslice.SetInterpolationModeToNearestNeighbor()   # binary mask — no blurring
-reslice.SetOutputOrigin(rasMin.tolist())
-reslice.SetOutputSpacing(spacing.tolist())
-reslice.SetOutputExtent(0, extent[0], 0, extent[1], 0, extent[2])
-reslice.Update()
-
-vtiWriter = vtk.vtkXMLImageDataWriter()
-vtiWriter.SetFileName(OUT_MASK_VTI)
-vtiWriter.SetInputData(reslice.GetOutput())
-vtiWriter.Write()
-
-log(f"Saving FCSV → {OUT_FCSV}")
-curveNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsCurveNode",
-                                               "CenterlineCurve")
-for i in range(centerlinePolyData.GetNumberOfPoints()):
-    x, y, z = centerlinePolyData.GetPoint(i)
-    curveNode.AddControlPoint(vtk.vtkVector3d(x, y, z))
-slicer.util.saveNode(curveNode, OUT_FCSV)
-
-log("Done.")
-slicer.util.exit(0)
+slicer.util.exit(0 if not errors else 1)
