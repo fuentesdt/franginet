@@ -20,6 +20,9 @@ import sys
 import slicer
 import vtk
 import numpy as np
+from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+
+ROI_LABEL = 5   # label value that defines the vessel ROI in the .ml mask
 
 # ── config ────────────────────────────────────────────────────────────────────
 REPO_DIR  = "/home/fuentes/github/franginet"
@@ -104,7 +107,7 @@ def reslice_to_ras(imageData, ijkToRas, spacing):
 
 # ── per-file pipeline ─────────────────────────────────────────────────────────
 
-def process_one(frangi_path, out_vtp, out_vti):
+def process_one(frangi_path, mask_path, out_vtp, out_vti):
     """Full pipeline for a single frangi vesselness volume."""
 
     # 1. load frangi volume into Slicer
@@ -117,7 +120,8 @@ def process_one(frangi_path, out_vtp, out_vti):
     ijkToRas  = vtk.vtkMatrix4x4()
     frangiNode.GetIJKToRASMatrix(ijkToRas)
     spacing = frangiNode.GetSpacing()
-    log(f"  Volume: {imageData.GetDimensions()}  spacing: {[round(s,3) for s in spacing]}")
+    dims    = imageData.GetDimensions()
+    log(f"  Volume: {dims}  spacing: {[round(s,3) for s in spacing]}")
 
     # 2. threshold → binary vtkImageData (still in IJK space)
     thresh = vtk.vtkImageThreshold()
@@ -127,13 +131,37 @@ def process_one(frangi_path, out_vtp, out_vti):
     thresh.SetOutValue(0)
     thresh.SetOutputScalarTypeToUnsignedChar()
     thresh.Update()
-    binaryIJK = thresh.GetOutput()
+    binaryArray = vtk_to_numpy(thresh.GetOutput().GetPointData().GetScalars())
 
-    nFg = int(np.sum(vtk.util.numpy_support.vtk_to_numpy(
-        binaryIJK.GetPointData().GetScalars())))
-    log(f"  Foreground voxels at threshold {THRESHOLD}: {nFg}")
+    # 3. load label mask and restrict to ROI_LABEL (=5) voxels
+    log(f"  Loading mask: {mask_path}  (ROI label={ROI_LABEL})")
+    maskNode = slicer.util.loadLabelVolume(mask_path)
+    if maskNode is None:
+        raise RuntimeError(f"Could not load mask {mask_path}")
+    maskDims = maskNode.GetImageData().GetDimensions()
+    if maskDims != dims:
+        raise RuntimeError(
+            f"Mask dimensions {maskDims} differ from frangi dimensions {dims}")
+    maskArray = vtk_to_numpy(maskNode.GetImageData().GetPointData().GetScalars())
+    roiVoxels = int(np.sum(maskArray == ROI_LABEL))
+    log(f"  ROI voxels (label={ROI_LABEL}): {roiVoxels}")
+    if roiVoxels == 0:
+        raise RuntimeError(
+            f"Label {ROI_LABEL} not found in {mask_path} — "
+            f"present labels: {np.unique(maskArray).tolist()}")
+
+    # zero vesselness outside the ROI, then apply threshold
+    maskedArray = (binaryArray * (maskArray == ROI_LABEL)).astype(np.uint8)
+
+    binaryIJK = vtk.vtkImageData()
+    binaryIJK.DeepCopy(thresh.GetOutput())
+    scalars = numpy_to_vtk(maskedArray, deep=True, array_type=vtk.VTK_UNSIGNED_CHAR)
+    binaryIJK.GetPointData().SetScalars(scalars)
+
+    nFg = int(maskedArray.sum())
+    log(f"  Foreground voxels after ROI masking: {nFg}")
     if nFg == 0:
-        raise RuntimeError("No foreground voxels after thresholding — check THRESHOLD")
+        raise RuntimeError("No foreground voxels inside ROI — check THRESHOLD and label")
 
     # 3. marching cubes → surface in IJK, then transform to RAS
     mc = vtk.vtkMarchingCubes()
@@ -280,15 +308,19 @@ log(f"  {len(rows)} rows\n")
 errors = []
 
 for row in rows:
-    subject  = row['subject_id']
-    session  = row['session']
-    tp       = row['timepoint']
-    img_path = row['image']
+    subject   = row['subject_id']
+    session   = row['session']
+    tp        = row['timepoint']
+    img_path  = row['image']
+    mask_path = row['mask']
 
     # derive frangi path from image path
     frangi_path = img_path.replace('.raw.nii.gz', '.frangi.nii.gz')
     if not os.path.exists(frangi_path):
         log(f"SKIP {subject}/{session}/{tp}: {frangi_path} not found")
+        continue
+    if not os.path.exists(mask_path):
+        log(f"SKIP {subject}/{session}/{tp}: mask {mask_path} not found")
         continue
 
     out_dir = os.path.dirname(os.path.abspath(frangi_path))
@@ -297,7 +329,7 @@ for row in rows:
 
     log(f"=== {subject} / {session} / {tp} ===")
     try:
-        process_one(frangi_path, out_vtp, out_vti)
+        process_one(frangi_path, mask_path, out_vtp, out_vti)
         log(f"  OK\n")
     except Exception as e:
         log(f"  ERROR: {e}\n")
