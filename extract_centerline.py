@@ -68,6 +68,7 @@ def save_vtp(pd, path):
     w = vtk.vtkXMLPolyDataWriter()
     w.SetFileName(path)
     w.SetInputData(pd)
+    w.SetDataModeToAscii()   # avoid zlib-compressed appended binary; ParaView 5.11 parses this fine
     w.Write()
 
 
@@ -120,18 +121,57 @@ if nPts == 0:
     slicer.util.exit(1)
 
 
-# ── 4. prepare surface (triangulate + keep largest region) ────────────────────
+# ── 4. prepare surface for VMTK ───────────────────────────────────────────────
 log("Pre-processing surface...")
+
+# Merge duplicate/coincident points left by marching cubes
+cleaner = vtk.vtkCleanPolyData()
+cleaner.SetInputData(modelNode.GetPolyData())
+cleaner.SetTolerance(0.0)
+cleaner.Update()
+
+# Triangulate (required by all downstream filters)
 tri = vtk.vtkTriangleFilter()
-tri.SetInputData(modelNode.GetPolyData())
+tri.SetInputData(cleaner.GetOutput())
 tri.Update()
 
+# Keep only the largest connected component
 conn = vtk.vtkPolyDataConnectivityFilter()
 conn.SetInputData(tri.GetOutput())
 conn.SetExtractionModeToLargestRegion()
 conn.Update()
-surface = conn.GetOutput()
-log(f"  cleaned: {surface.GetNumberOfPoints()} pts")
+
+# Fill boundary holes so the surface is closed
+fill = vtk.vtkFillHolesFilter()
+fill.SetInputData(conn.GetOutput())
+fill.SetHoleSize(10000.0)
+fill.Update()
+
+# Re-triangulate after hole filling
+tri2 = vtk.vtkTriangleFilter()
+tri2.SetInputData(fill.GetOutput())
+tri2.Update()
+
+# Adaptive subdivision: splits any edge longer than the target length.
+# Unlike vtkLoopSubdivisionFilter this does NOT require a closed manifold.
+# Target 0.3 mm gives ~10× more faces than the raw 1 mm/vox marching-cubes
+# surface, which gives VMTK's Voronoi path-finder enough geometry to work with.
+subdiv = vtk.vtkAdaptiveSubdivisionFilter()
+subdiv.SetInputData(tri2.GetOutput())
+subdiv.SetMaximumEdgeLength(0.3)
+subdiv.Update()
+
+# Smooth to remove staircase artefacts without displacing the vessel shape
+smoother = vtk.vtkWindowedSincPolyDataFilter()
+smoother.SetInputData(subdiv.GetOutput())
+smoother.SetNumberOfIterations(20)
+smoother.SetPassBand(0.1)
+smoother.NormalizeCoordinatesOn()
+smoother.Update()
+
+surface = smoother.GetOutput()
+log(f"  pre-processed: {surface.GetNumberOfPoints()} pts, "
+    f"{surface.GetNumberOfCells()} cells")
 
 
 # ── 5. PCA endpoint detection ─────────────────────────────────────────────────
