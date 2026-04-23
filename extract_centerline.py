@@ -29,6 +29,12 @@ REPO_DIR  = "/home/fuentes/github/franginet"
 MANIFEST  = os.path.join(REPO_DIR, "Processed", "manifest.csv")
 THRESHOLD = 0.44   # match result.threshold from tuneFrangi_result.mat
 
+# Decimation target: fraction of triangles to KEEP after quadric decimation.
+# 1.0 = no decimation (skip step).  Lower values remove more triangles but
+# can degrade topology.  Start at 0.5 and tune toward 0.2 if VMTK still
+# reports degenerate triangles; move toward 1.0 if the centerline is jagged.
+DECIMATE_TARGET_REDUCTION = 0.5   # e.g. 0.5 → keep 50 % of triangles
+
 
 def log(msg):
     print(f"[centerline] {msg}", flush=True)
@@ -209,17 +215,33 @@ def process_one(frangi_path, mask_path, out_vtp, out_vti):
     subdiv.SetInputData(tri2.GetOutput())
     subdiv.SetMaximumEdgeLength(0.3)
     subdiv.Update()
+    pre_decimate = subdiv.GetOutput()
+    log(f"  After subdivision : {pre_decimate.GetNumberOfPoints():>7} pts  "
+        f"{pre_decimate.GetNumberOfCells():>7} tris")
+
+    if DECIMATE_TARGET_REDUCTION < 1.0:
+        decimate = vtk.vtkQuadricDecimation()
+        decimate.SetInputData(pre_decimate)
+        decimate.SetTargetReduction(DECIMATE_TARGET_REDUCTION)
+        decimate.Update()
+        post_decimate = decimate.GetOutput()
+        log(f"  After decimation  : {post_decimate.GetNumberOfPoints():>7} pts  "
+            f"{post_decimate.GetNumberOfCells():>7} tris  "
+            f"(target reduction={DECIMATE_TARGET_REDUCTION:.2f})")
+    else:
+        post_decimate = pre_decimate
+        log(f"  Decimation skipped (DECIMATE_TARGET_REDUCTION=1.0)")
 
     smoother = vtk.vtkWindowedSincPolyDataFilter()
-    smoother.SetInputData(subdiv.GetOutput())
+    smoother.SetInputData(post_decimate)
     smoother.SetNumberOfIterations(20)
     smoother.SetPassBand(0.1)
     smoother.NormalizeCoordinatesOn()
     smoother.Update()
 
     surface = smoother.GetOutput()
-    log(f"  Pre-processed surface: {surface.GetNumberOfPoints()} pts, "
-        f"{surface.GetNumberOfCells()} cells")
+    log(f"  After smoothing   : {surface.GetNumberOfPoints():>7} pts  "
+        f"{surface.GetNumberOfCells():>7} tris")
 
     if surface.GetNumberOfPoints() == 0:
         raise RuntimeError("Surface pre-processing produced empty result")
@@ -232,14 +254,23 @@ def process_one(frangi_path, mask_path, out_vtp, out_vti):
     log(f"  Source pt {srcId}: {srcXYZ.round(2)}")
     log(f"  Target pt {tgtId}: {tgtXYZ.round(2)}")
 
-    # 6. centerline extraction (backend A → B fallback)
+    # 6. compute consistent normals — required by VMTK's Voronoi builder
+    normals = vtk.vtkPolyDataNormals()
+    normals.SetInputData(surface)
+    normals.ConsistencyOn()       # flip inconsistent normals to agree with neighbours
+    normals.SplittingOff()        # no new vertices at sharp edges
+    normals.AutoOrientNormalsOn() # orient all normals outward
+    normals.Update()
+    surfaceWithNormals = normals.GetOutput()
+
+    # 7. centerline extraction (backend A → B fallback)
     centerlinePolyData = None
 
     try:
         import vtkvmtkComputationalGeometryPython as vtkvmtk
         log("  Backend: vtkvmtkComputationalGeometryPython")
         clFilter = vtkvmtk.vtkvmtkPolyDataCenterlines()
-        clFilter.SetInputData(surface)
+        clFilter.SetInputData(surfaceWithNormals)
         clFilter.SetSourceSeedIds(make_id_list(srcId))
         clFilter.SetTargetSeedIds(make_id_list(tgtId))
         clFilter.SetRadiusArrayName("MaximumInscribedSphereRadius")
@@ -260,27 +291,33 @@ def process_one(frangi_path, mask_path, out_vtp, out_vti):
         log("  Backend: ExtractCenterlineLogic")
         ecLogic = ExtractCenterline.ExtractCenterlineLogic()
 
+        # actual signature: extractCenterline(surfacePolyData, endPointsMarkupsNode,
+        #                                     curveSamplingDistance=1.0)
         endpointsNode = slicer.mrmlScene.AddNewNodeByClass(
             "vtkMRMLMarkupsFiducialNode", "Endpoints")
         endpointsNode.AddControlPoint(vtk.vtkVector3d(*srcXYZ))
         endpointsNode.AddControlPoint(vtk.vtkVector3d(*tgtXYZ))
 
-        centerlineModelNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLModelNode", "CenterlineModel")
-        voronoiModelNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLModelNode", "VoronoiDiagram")
-        centerlineCurveNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLMarkupsCurveNode", "CenterlineCurve")
+        result = ecLogic.extractCenterline(surfaceWithNormals, endpointsNode)
 
-        # modelNode is no longer in scope; use a transient model node from surface
-        surfModelNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "Surface")
-        surfModelNode.SetAndObservePolyData(surface)
-        ecLogic.extractCenterline(
-            surfModelNode, endpointsNode,
-            centerlineModelNode, voronoiModelNode, centerlineCurveNode)
+        # result may be a model node, a polydata, or a dict depending on version
+        if isinstance(result, vtk.vtkPolyData):
+            centerlinePolyData = result
+        elif hasattr(result, 'GetPolyData'):
+            centerlinePolyData = result.GetPolyData()
+        elif isinstance(result, dict):
+            node = result.get('centerlineModelNode') or result.get('centerline')
+            centerlinePolyData = node.GetPolyData() if hasattr(node, 'GetPolyData') else node
+        else:
+            # fall back: search the scene for any newly added model node
+            for i in range(slicer.mrmlScene.GetNumberOfNodesByClass('vtkMRMLModelNode')):
+                n = slicer.mrmlScene.GetNthNodeByClass(i, 'vtkMRMLModelNode')
+                if n.GetPolyData() and n.GetPolyData().GetNumberOfLines() > 0:
+                    centerlinePolyData = n.GetPolyData()
+                    break
 
-        centerlinePolyData = centerlineModelNode.GetPolyData()
-        log(f"  Centerline: {centerlinePolyData.GetNumberOfPoints()} pts")
+        if centerlinePolyData is not None:
+            log(f"  Centerline: {centerlinePolyData.GetNumberOfPoints()} pts")
 
     if centerlinePolyData is None or centerlinePolyData.GetNumberOfPoints() == 0:
         raise RuntimeError("All backends returned empty centerline")
@@ -295,6 +332,7 @@ def process_one(frangi_path, mask_path, out_vtp, out_vti):
     vtiWriter = vtk.vtkXMLImageDataWriter()
     vtiWriter.SetFileName(out_vti)
     vtiWriter.SetInputData(rasImage)
+    vtiWriter.SetDataModeToAscii()   # avoid zlib-compressed binary; ParaView 5.11 parses this fine
     vtiWriter.Write()
 
 
