@@ -59,6 +59,7 @@ p = inputParser;
 addRequired(p,'frangi_file');
 addRequired(p,'image_file');
 addParameter(p,'frangi_threshold', 0.44);
+addParameter(p,'min_island_vox',  10);   % drop CC with fewer voxels than this
 addParameter(p,'alpha',       0.5);
 addParameter(p,'beta',        0.5);
 addParameter(p,'scales_mm',   [0.5 1.0 1.5 2.0]);
@@ -108,7 +109,7 @@ vprint(opt,'   Vesselness range: [%.4f, %.4f]', min(V(:)), max(V(:)));
 vprint(opt,'[2/7] Extracting vessel graph from Frangi (threshold=%.2f)...', ...
     opt.frangi_threshold);
 
-G = extract_graph_from_frangi(V, opt.frangi_threshold, vox, xv, yv, zv, sz);
+G = extract_graph_from_frangi(V, opt.frangi_threshold, opt.min_island_vox, vox, xv, yv, zv, sz);
 
 vprint(opt,'   Skeleton nodes : %d', size(G.nodes,1));
 vprint(opt,'   Skeleton edges : %d', size(G.edges,1));
@@ -287,15 +288,56 @@ vprint(opt,'   Simply connected: CONFIRMED');
 % -----------------------------------------------------------------------
 vprint(opt,'Saving outputs...');
 
-label    = rasterise_graph(G, xv, yv, zv, sz, vox, opt.r_min_mm);
-out_info = build_nifti_info(sz, mean(vox), sz.*vox);
+label = rasterise_graph(G, xv, yv, zv, sz, vox, opt.r_min_mm);
+
+% Fallback: if the rasterised graph is empty (no CCO improvement possible),
+% save the raw binary Frangi threshold so the output is never all-zeros.
+if ~any(label(:))
+    vprint(opt,'   WARNING: rasterised graph is empty — falling back to binary Frangi threshold (%.2f).', ...
+        opt.frangi_threshold);
+    label = uint8(V >= opt.frangi_threshold);
+    out_info = info;
+    out_info.Datatype     = 'uint8';
+    out_info.BitsPerPixel = 8;
+    out_info.Filename     = '';
+    out_info.DisplayIntensityRange = [0 1];
+else
+    out_info = build_nifti_info(sz, mean(vox), sz.*vox);
+end
+
+% ── Post-processing: enforce a single 3D connected component ─────────────
+% "Simply connected" in the graph does not guarantee voxel-level connectivity
+% (MST bridge tubes can be thinner than the voxel gap they span).
+% Keep the largest 3D component; report what is dropped.
+cc_post = bwconncomp(label > 0, 6);
+if cc_post.NumObjects > 1
+    comp_sz  = cellfun(@numel, cc_post.PixelIdxList);
+    [~, L]   = max(comp_sz);
+    dropped  = sum(label(:) > 0) - comp_sz(L);
+    label_lc = zeros(sz, 'uint8');
+    label_lc(cc_post.PixelIdxList{L}) = label(cc_post.PixelIdxList{L});
+    label    = label_lc;
+    vprint(opt,'   3D post-processing: %d→1 component, %d voxels dropped (%.1f%%)', ...
+        cc_post.NumObjects, dropped, 100*dropped/sum(label(:)>0 | dropped>0));
+else
+    vprint(opt,'   3D post-processing: already 1 component, nothing dropped.');
+end
 
 out_nii = fullfile(opt.output_dir,'completed_vessels.nii.gz');
 niftiwrite(label, out_nii(1:end-3), out_info, 'Compressed', true);
+
+skel_info = info;
+skel_info.Datatype     = 'uint8';
+skel_info.BitsPerPixel = 8;
+skel_info.Filename     = '';
+skel_nii = fullfile(opt.output_dir,'skeleton.nii.gz');
+niftiwrite(uint8(G.skel), skel_nii(1:end-3), skel_info, 'Compressed', true);
+
 save(fullfile(opt.output_dir,'completed_graph.mat'),  'G');
 save(fullfile(opt.output_dir,'bridge_report.mat'),     'bridge_report');
 
-vprint(opt,'   completed_vessels.nii.gz');
+vprint(opt,'   completed_vessels.nii.gz  (%d vessel voxels)', sum(label(:) > 0));
+vprint(opt,'   skeleton.nii.gz           (%d skeleton voxels)', sum(G.skel(:)));
 vprint(opt,'   completed_graph.mat');
 vprint(opt,'   bridge_report.mat');
 vprint(opt,'=== Done ===');
@@ -307,7 +349,7 @@ end
 %% =======================================================================
 
 % -------------------------------------------------------------------------
-function G = extract_graph_from_frangi(V_map, threshold, vox, xv, yv, zv, sz)
+function G = extract_graph_from_frangi(V_map, threshold, min_island_vox, vox, xv, yv, zv, sz)
 %EXTRACT_GRAPH_FROM_FRANGI
 %  Threshold the Frangi map, skeletonise with bwskel, and extract a
 %  node/edge graph.  Radii are estimated from the distance transform of
@@ -319,19 +361,22 @@ function G = extract_graph_from_frangi(V_map, threshold, vox, xv, yv, zv, sz)
 %    G.radii  [E×1]  mean local radius along segment (mm)
 %    G.fixed  [E×1]  true = original Frangi segment (never modified)
 
-% 1. Threshold and keep largest connected component
+% 1. Threshold; keep all connected components above min_island_vox
 binary = V_map >= threshold;
 cc_bin = bwconncomp(binary, 6);
 if cc_bin.NumObjects == 0
     error('extract_graph_from_frangi: no voxels above threshold %.2f', threshold);
 end
 comp_sizes = cellfun(@numel, cc_bin.PixelIdxList);
-[~, largest_cc] = max(comp_sizes);
+keep_mask  = comp_sizes >= min_island_vox;
 binary_clean = false(sz);
-binary_clean(cc_bin.PixelIdxList{largest_cc}) = true;
+for k = find(keep_mask)
+    binary_clean(cc_bin.PixelIdxList{k}) = true;
+end
 
-fprintf('   Binary mask: %d voxels in largest component\n', ...
-    sum(binary_clean(:)));
+fprintf('   Components: %d total, %d kept (>= %d vox), %d dropped as islands\n', ...
+    cc_bin.NumObjects, sum(keep_mask), min_island_vox, sum(~keep_mask));
+fprintf('   Binary mask: %d voxels retained\n', sum(binary_clean(:)));
 
 % 2. Skeletonise (requires Image Processing Toolbox R2019a+)
 skel = bwskel(binary_clean);
@@ -368,8 +413,11 @@ if n_nodes == 0
     critical_mask(crit_idx) = true;
 end
 
-[cx, cy, cz] = ind2sub(sz, crit_idx);
-nodes = [xv(cx(:)), yv(cy(:)), zv(cz(:))];   % [n_nodes × 3]
+[cx, cy, cz] = ind2sub(sz, crit_idx(:));
+% reshape forces n_nodes×1 regardless of whether xv(cx(:)) returns row or col
+nodes = [reshape(xv(cx(:)), [], 1), ...
+         reshape(yv(cy(:)), [], 1), ...
+         reshape(zv(cz(:)), [], 1)];   % [n_nodes × 3]
 
 fprintf('   Critical voxels: %d endpoints, %d junctions\n', ...
     sum(endpoint_mask(:)), sum(junction_mask(:)));
@@ -452,6 +500,41 @@ for ni = 1:n_nodes
     end
 end
 
+% Closed-loop fallback: BFS produced zero edges because the skeleton is a
+% single closed curve with no degree-1 or degree-3 voxels.  Trace the full
+% skeleton as an ordered BFS chain so that rasterise_graph has something to
+% draw.  Decimated to one node per voxel (may be large but always correct).
+if isempty(edges) && any(skel(:))
+    fprintf('   Skeleton has no endpoints/junctions — tracing as closed-loop chain.\n');
+    queue   = crit_idx(1);
+    vis2    = false(sz);
+    vis2(queue) = true;
+    order   = queue;
+    head    = 1;
+    while head <= numel(order)
+        curr = order(head);  head = head + 1;
+        for d = 1:n_off
+            nb = int32(curr) + offsets(d);
+            if nb < 1 || nb > numel(skel), continue; end
+            if ~skel(nb) || vis2(nb),       continue; end
+            vis2(nb) = true;
+            order(end+1) = nb;   %#ok<AGROW>
+        end
+    end
+    [ox, oy, oz] = ind2sub(sz, order(:));
+    nodes        = [reshape(xv(ox(:)), [], 1), ...
+                    reshape(yv(oy(:)), [], 1), ...
+                    reshape(zv(oz(:)), [], 1)];
+    n_nodes      = numel(order);
+    n_chain      = n_nodes - 1;
+    edges        = [(1:n_chain)', (2:n_chain+1)'];
+    edge_radii   = zeros(n_chain, 1, 'single');
+    for k = 1:n_chain
+        edge_radii(k) = single((dt(order(k)) + dt(order(k+1))) / 2 * mean(vox));
+    end
+    fprintf('   Chain: %d nodes, %d edges.\n', n_nodes, n_chain);
+end
+
 % Remove duplicate edges
 if ~isempty(edges)
     sorted_e  = sort(double(edges), 2);
@@ -467,6 +550,7 @@ G.nodes = nodes;
 G.edges = edges;
 G.radii = max(double(edge_radii), 0.1);
 G.fixed = true(size(edges,1),1);
+G.skel  = skel;
 end
 
 
