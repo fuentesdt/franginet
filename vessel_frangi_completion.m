@@ -69,7 +69,7 @@ addParameter(p,'w_geo',       0.30);
 addParameter(p,'w_hu',        0.20);
 addParameter(p,'w_flow',      0.15);
 addParameter(p,'hu_vessel',   250);
-addParameter(p,'r_min_mm',    0.5);
+addParameter(p,'r_min_mm',    2.0);
 addParameter(p,'conf_auto',   0.50);
 addParameter(p,'conf_mst',    0.25);
 addParameter(p,'voxel_out_mm',1.0);
