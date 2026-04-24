@@ -156,6 +156,22 @@ vprint(opt,'   Cost volume built.');
 vprint(opt,'[5/7] Finding break tips and gap candidates...');
 
 n_nodes = size(G.nodes,1);
+
+% Drop any edges whose node indices exceed the node count (guards against
+% the closed-loop fallback producing a mis-indexed crit_idx).
+if ~isempty(G.edges)
+    valid_e  = all(G.edges >= 1 & G.edges <= n_nodes, 2);
+    n_pruned = sum(~valid_e);
+    if n_pruned > 0
+        warning('vessel_frangi_completion:badEdges', ...
+            'Pruned %d edges with out-of-range node indices (n_nodes=%d).', ...
+            n_pruned, n_nodes);
+        G.edges = G.edges(valid_e, :);
+        G.radii = G.radii(valid_e);
+        G.fixed = G.fixed(valid_e);
+    end
+end
+
 degree  = zeros(n_nodes,1);
 for e = 1:size(G.edges,1)
     degree(G.edges(e,1)) = degree(G.edges(e,1)) + 1;
@@ -341,8 +357,12 @@ crit_idx = find(critical_mask);
 n_nodes  = numel(crit_idx);
 
 if n_nodes == 0
-    % Whole skeleton is a single closed loop — add one artificial endpoint
-    [~, crit_idx] = max(dt(skel));
+    % Whole skeleton is a single closed loop — add one artificial endpoint.
+    % max(dt(skel)) returns an index into the sub-vector, not the volume;
+    % use find(skel) to map back to a proper linear volume index.
+    skel_idx = find(skel);
+    [~, best] = max(dt(skel_idx));
+    crit_idx = skel_idx(best);
     n_nodes = 1;
     critical_mask = false(sz);
     critical_mask(crit_idx) = true;
