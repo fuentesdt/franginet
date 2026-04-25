@@ -67,17 +67,20 @@ vp('  alpha=%.0f  mu=%.2e Pa·s  p_in=%.0f  p_out=%.0f mmHg  gap_max=%.0f mm', .
 %% ── 1. Load volumes ──────────────────────────────────────────────────────
 vp('[1/6] Loading volumes...');
 
-info_skel  = niftiinfo(skel_nii);
-info_label = niftiinfo(label_nii);
-skel       = logical(niftiread(skel_nii));
-label_vol  = niftiread(label_nii);
+info_skel = niftiinfo(skel_nii);
+skel      = logical(niftiread(skel_nii));
+label_vol = niftiread(label_nii);
 
-vox = abs(diag(info_skel.Transform.T(1:3,1:3)))';   % [dx dy dz] mm
 sz  = size(skel);
 
-xv = ((0:sz(1)-1) - sz(1)/2) * vox(1);
-yv = ((0:sz(2)-1) - sz(2)/2) * vox(2);
-zv = ((0:sz(3)-1) - sz(3)/2) * vox(3);
+% MATLAB affine3d convention: [x y z 1] = [i j k 1] * A  (1-indexed i,j,k)
+% xv(n) = world x of MATLAB row-index n  →  matches NIfTI world coords exactly.
+% vox uses abs() for distance-transform scaling (always positive).
+A   = info_skel.Transform.T;
+vox = abs([A(1,1), A(2,2), A(3,3)]);
+xv  = A(1,1)*(1:sz(1)) + A(4,1);
+yv  = A(2,2)*(1:sz(2)) + A(4,2);
+zv  = A(3,3)*(1:sz(3)) + A(4,3);
 
 % Radius map from distance transform of vessel binary mask
 binary = label_vol == opt.label_val;
@@ -272,11 +275,6 @@ pnii = fullfile(opt.output_dir, 'pressure_mmhg.nii.gz');
 niftiwrite(pressure_vol, pnii(1:end-3), out_info, 'Compressed', true);
 vp('   pressure_mmhg.nii.gz');
 
-% ── Write label volume as VTI for ParaView ────────────────────────────────
-vti_path = fullfile(opt.output_dir, 'label.vti');
-write_vti(vti_path, label_vol, info_label);
-vp('   label.vti');
-
 % ── Save MAT ─────────────────────────────────────────────────────────────
 results = struct( ...
     'nodes',             nodes,          ...
@@ -470,102 +468,3 @@ if ~isempty(ei), r = radii(ei); else, r = 1.5; end
 end
 
 
-% -------------------------------------------------------------------------
-function write_vti(outpath, vol, info_nii)
-% Write a 3-D volume as VTK XML ImageData (.vti) preserving the NIfTI
-% spatial coordinate system (origin, spacing, direction cosines).
-%
-% Encoding: inline base64 (format="binary") — avoids the AppendedData
-% raw-binary path whose 0x00/0x02 bytes are invalid XML characters and
-% cause expat to fail before VTK's binary-skip logic can engage.
-%
-% Compatibility: ParaView 5.6+ / VTK 8+.
-%   Direction attribute recognised by VTK 9+ (ParaView 5.9+); older
-%   builds load the data but ignore oblique orientation.
-
-sz = size(vol);
-
-% ── Spatial parameters from NIfTI transform ──────────────────────────────
-% transformPointsForward maps 1-indexed MATLAB voxel → world mm.
-% VTK voxel (0,0,0) = MATLAB voxel (1,1,1).
-origin = info_nii.Transform.transformPointsForward([1 1 1]);
-pt_x   = info_nii.Transform.transformPointsForward([2 1 1]);
-pt_y   = info_nii.Transform.transformPointsForward([1 2 1]);
-pt_z   = info_nii.Transform.transformPointsForward([1 1 2]);
-
-step_x  = pt_x - origin;
-step_y  = pt_y - origin;
-step_z  = pt_z - origin;
-spacing = [norm(step_x), norm(step_y), norm(step_z)];
-
-% Direction cosines row-major: [ix iy iz  jx jy jz  kx ky kz]
-dir_x = step_x / spacing(1);
-dir_y = step_y / spacing(2);
-dir_z = step_z / spacing(3);
-
-% ── Data type mapping ─────────────────────────────────────────────────────
-if islogical(vol) || isa(vol, 'uint8')
-    data = uint8(vol(:));   vtk_type = 'UInt8';
-elseif isa(vol, 'uint16')
-    data = uint16(vol(:));  vtk_type = 'UInt16';
-elseif isa(vol, 'int16')
-    data = int16(vol(:));   vtk_type = 'Int16';
-elseif isa(vol, 'int32')
-    data = int32(vol(:));   vtk_type = 'Int32';
-elseif isa(vol, 'single')
-    data = single(vol(:));  vtk_type = 'Float32';
-else
-    data = single(vol(:));  vtk_type = 'Float32';
-end
-raw_bytes = typecast(data, 'uint8');
-
-% ── Base64 encode: [uint32 byte-count][raw bytes] ────────────────────────
-% VTK version="0.1" format="binary" block layout: 32-bit length header.
-n32      = uint32(numel(raw_bytes));
-hdr_b    = typecast(n32, 'uint8');        % 4 bytes, length prefix
-block    = uint8([hdr_b(:); raw_bytes(:)]);
-b64      = vtk_base64(block);
-
-% ── Write XML ─────────────────────────────────────────────────────────────
-ex = sz(1:3) - 1;
-fid = fopen(outpath, 'w');
-fprintf(fid, '<?xml version="1.0"?>\n');
-fprintf(fid, '<VTKFile type="ImageData" version="0.1" byte_order="LittleEndian">\n');
-fprintf(fid, '  <ImageData WholeExtent="0 %d 0 %d 0 %d"\n', ex(1), ex(2), ex(3));
-fprintf(fid, '             Origin="%.10g %.10g %.10g"\n',    origin(1),  origin(2),  origin(3));
-fprintf(fid, '             Spacing="%.10g %.10g %.10g"\n',   spacing(1), spacing(2), spacing(3));
-fprintf(fid, '             Direction="%.10g %.10g %.10g %.10g %.10g %.10g %.10g %.10g %.10g">\n', ...
-    dir_x(1), dir_x(2), dir_x(3), dir_y(1), dir_y(2), dir_y(3), dir_z(1), dir_z(2), dir_z(3));
-fprintf(fid, '    <Piece Extent="0 %d 0 %d 0 %d">\n', ex(1), ex(2), ex(3));
-fprintf(fid, '      <PointData Scalars="label">\n');
-fprintf(fid, '        <DataArray type="%s" Name="label" format="binary">\n', vtk_type);
-fprintf(fid, '          %s\n', b64);
-fprintf(fid, '        </DataArray>\n');
-fprintf(fid, '      </PointData>\n');
-fprintf(fid, '      <CellData/>\n');
-fprintf(fid, '    </Piece>\n');
-fprintf(fid, '  </ImageData>\n');
-fprintf(fid, '</VTKFile>\n');
-fclose(fid);
-end
-
-
-% -------------------------------------------------------------------------
-function b64 = vtk_base64(bytes)
-% Encode a uint8 column/row vector as a base64 character vector.
-% No toolbox required — pure MATLAB vectorised implementation.
-TABLE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-bytes  = bytes(:)';                          % ensure row vector
-n      = numel(bytes);
-n_pad  = mod(3 - mod(n,3), 3);
-if n_pad, bytes = [bytes, zeros(1,n_pad,'uint8')]; end
-
-B  = reshape(bytes, 3, []);                  % 3 × N_groups
-i1 = bitshift(B(1,:), -2);
-i2 = bitshift(bitand(B(1,:),uint8(3)), 4) + bitshift(B(2,:), -4);
-i3 = bitshift(bitand(B(2,:),uint8(15)),2) + bitshift(B(3,:), -6);
-i4 = bitand(B(3,:), uint8(63));
-
-b64 = TABLE([i1(:);i2(:);i3(:);i4(:)]' + 1);
-if n_pad, b64(end-n_pad+1:end) = '='; end
-end
