@@ -14,9 +14,11 @@
 #   make skeletonize       Skeletonize all label volumes only
 #   make centerlines       Up to and including skelcenterline.py
 #   make pressures         Full pipeline  (default goal)
+#   make vtis              Convert all label NIfTIs to .vti (ParaView ImageData)
 #   make info              Print the derived file list for each sample
 #   make clean             Remove newdata/
 #   make clean-vtp         Remove only .vtp outputs (keep skeletons)
+#   make clean-vti         Remove only .vti outputs
 # ==============================================================================
 
 MANIFEST  := manifest.csv
@@ -51,6 +53,9 @@ skel_to_cl     = $(patsubst %.nii.gz,%_centerline.vtp,$(1))
 # ..._skel_centerline.vtp  →  ..._skel_centerline_pressure.vtp
 cl_to_pr       = $(patsubst %_centerline.vtp,%_centerline_pressure.vtp,$(1))
 
+# label.nii[.gz]  →  newdata/<dir>/<stem>.vti
+label_to_vti   = $(NEWDATA)/$(call nii_stem,$(1)).vti
+
 # ==============================================================================
 # Parse manifest.csv
 # ==============================================================================
@@ -74,6 +79,7 @@ LABEL_NIIS := $(strip $(shell awk -F, -v c=$(_LCOL) \
 SKEL_NIIS := $(foreach l,$(LABEL_NIIS),$(call label_to_skel,$(l)))
 CL_VTPS   := $(foreach s,$(SKEL_NIIS),$(call skel_to_cl,$(s)))
 PR_VTPS   := $(foreach c,$(CL_VTPS),$(call cl_to_pr,$(c)))
+VTI_FILES := $(foreach l,$(LABEL_NIIS),$(call label_to_vti,$(l)))
 
 # Unique output directories  (needed before MATLAB writes files)
 OUT_DIRS  := $(sort $(dir $(SKEL_NIIS)))
@@ -82,13 +88,14 @@ OUT_DIRS  := $(sort $(dir $(SKEL_NIIS)))
 # Top-level targets
 # ==============================================================================
 
-.PHONY: all skeletonize centerlines pressures info clean clean-vtp
+.PHONY: all skeletonize centerlines pressures vtis info clean clean-vtp clean-vti
 
-all: pressures
+all: pressures vtis
 
 pressures:   $(PR_VTPS)
 centerlines: $(CL_VTPS)
 skeletonize: $(SKEL_NIIS)
+vtis:        $(VTI_FILES)
 
 # ==============================================================================
 # Output directory rule
@@ -143,6 +150,9 @@ $(word $(1),$(PR_VTPS)): $(word $(1),$(CL_VTPS)) $(word $(1),$(LABEL_NIIS))
 	  --alpha $(ALPHA) \
 	  --gap-mode $(GAP_MODE)
 
+$(word $(1),$(VTI_FILES)): $(word $(1),$(LABEL_NIIS)) | $(dir $(word $(1),$(VTI_FILES)))
+	$(PYTHON) convertparaview.py vti $$< $$@
+
 endef
 
 $(foreach i,$(shell seq 1 $(words $(LABEL_NIIS))),\
@@ -161,6 +171,7 @@ info:
 	  echo "       skel       : $(word $(i),$(SKEL_NIIS))";\
 	  echo "       centerline : $(word $(i),$(CL_VTPS))";\
 	  echo "       pressure   : $(word $(i),$(PR_VTPS))";\
+	  echo "       vti        : $(word $(i),$(VTI_FILES))";\
 	  echo "";)
 
 clean:
@@ -168,3 +179,6 @@ clean:
 
 clean-vtp:
 	rm -f $(CL_VTPS) $(PR_VTPS)
+
+clean-vti:
+	rm -f $(VTI_FILES)
