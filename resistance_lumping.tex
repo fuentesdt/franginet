@@ -1,0 +1,178 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage[numbers]{natbib}
+
+\title{Vascular Resistance Network Analysis}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Vascular Resistance Network Analysis}
+\label{sec:resistance_lumping}
+
+\subsection{Skeleton-to-Centerline Graph Construction}
+
+A dense one-dimensional (1-D) centerline graph was constructed directly from the
+skeletonized vessel mask.  Every non-zero voxel in the binary skeleton volume was
+assigned a unique node positioned at its world-coordinate voxel centre, derived
+from the NIfTI affine transformation $\mathbf{A}$:
+%
+\begin{equation}
+  \mathbf{x}_k = \mathbf{A}
+  \begin{bmatrix} i_k \\ j_k \\ k_k \\ 1 \end{bmatrix}_{[1:3]},
+  \quad k = 1, \ldots, N,
+\end{equation}
+%
+where $(i_k, j_k, k_k)$ are the zero-indexed voxel coordinates of node $k$ and
+$N$ is the total number of skeleton voxels.  Undirected edges were placed between
+every pair of 26-connected adjacent skeleton voxels, so the mesh topology exactly
+mirrors the skeleton connectivity in the original volume.
+
+\subsection{Vessel Radius Estimation}
+
+The local vessel radius at each node was estimated as the Euclidean distance from
+that node to the nearest background voxel.  A distance transform was computed on
+the binary vessel mask $\Omega$ using the method of
+\citet{meijster2000general}:
+%
+\begin{equation}
+  r(\mathbf{x}) = \mathrm{EDT}\!\left(\mathbf{1} - \mathbf{1}_\Omega\right)\!(\mathbf{x}),
+\end{equation}
+%
+where the transform was evaluated with per-axis voxel spacing
+$(\Delta x, \Delta y, \Delta z)$ to correctly handle anisotropic acquisitions.
+The resulting distance-transform volume was then sampled at each node world
+position via nearest-voxel interpolation (using the inverse affine), and values
+below $0.1\,\mathrm{mm}$ were clamped to that floor to avoid degenerate
+conductances.
+
+\subsection{Hagen-Poiseuille Conductance}
+
+Each edge $e = (i,j)$ was assigned a lumped Hagen-Poiseuille conductance
+%
+\begin{equation}
+  G_{ij} = \frac{\pi \bar{r}_{ij}^{\,4}}{8\,\mu\,L_{ij}},
+\end{equation}
+%
+where $\bar{r}_{ij} = (r_i + r_j)/2$ is the mean nodal radius along the
+edge, $L_{ij} = \|\mathbf{x}_i - \mathbf{x}_j\|_2$ is the Euclidean edge
+length, and $\mu = 3.5 \times 10^{-3}\,\mathrm{Pa\cdot s}$ is the dynamic
+viscosity of blood.  All quantities were converted to SI units before evaluation.
+
+\subsection{Phantom Gap Edges}
+
+Skeletonization and image acquisition artifacts frequently produce multiple
+disconnected components.  To obtain a fully connected conductance network,
+phantom gap edges were inserted between components separated by less than a
+user-specified maximum gap distance $d_\mathrm{max}$.
+
+\paragraph{Candidate endpoint selection.}
+For each connected component, candidate gap-bridging nodes were identified as
+degree-$\leq 1$ skeleton tips (leaves); for isolated single-node components all
+nodes were considered candidates.
+
+\paragraph{MST bridging (default).}
+A $k$-d tree was built on all candidate nodes.  All cross-component candidate
+pairs within Euclidean distance $d_\mathrm{max}$ were enumerated via
+\texttt{query\_pairs}.  For each pair of components $(c_i, c_j)$, only the
+closest candidate pair was retained as the representative bridge, giving a
+component-level weighted graph.  A minimum spanning tree (MST) was computed on
+this component graph to select the minimal set of bridges that ensures full
+connectivity.  This guarantees exactly one phantom edge per gap at minimum total
+phantom length, avoiding spurious parallel conductance paths that would distort
+the flow solution.
+
+\paragraph{k-NN bridging (fallback).}
+As an alternative, every cross-component candidate pair within $d_\mathrm{max}$
+received a phantom edge.  This matches the behaviour of the legacy MATLAB
+implementation but can introduce redundant parallel paths when many tip nodes
+are spatially clustered.
+
+\paragraph{Phantom conductance.}
+Each phantom edge $(i,j)$ was assigned a penalised conductance
+%
+\begin{equation}
+  G^\mathrm{ph}_{ij} = \frac{\pi \bar{r}_{ij}^{\,4}}{8\,\mu\,\alpha\,L_{ij}},
+\end{equation}
+%
+where $\alpha = 10$ is a dimensionless penalty factor ensuring that phantom
+bridges carry negligible flow relative to real vascular connections.
+
+\subsection{Boundary Conditions}
+
+Boundary conditions were assigned automatically from the real-graph topology.
+The inlet node was defined as the degree-$\leq 1$ leaf with the largest local
+radius (reflecting the largest visible feeding vessel), and prescribed a pressure
+$p_\mathrm{in} = 100\,\mathrm{mmHg}$.  All other real-graph leaves were treated
+as outlets and prescribed $p_\mathrm{out} = 5\,\mathrm{mmHg}$.  In the absence
+of any topological leaves (e.g.\ fully cyclic sub-graphs), the nodes with the
+maximum and minimum $z$-coordinates were used as inlet and outlet, respectively.
+
+\subsection{Sparse Conductance System and Solution}
+
+The nodal pressure field $\mathbf{p} \in \mathbb{R}^N$ was obtained by solving
+the symmetric sparse Kirchhoff system
+%
+\begin{equation}
+  \mathbf{K}\,\mathbf{p} = \mathbf{q},
+\end{equation}
+%
+where the global conductance (Laplacian) matrix is
+%
+\begin{equation}
+  K_{kl} = \begin{cases}
+    \displaystyle\sum_{j \sim k} G_{kj} & k = l, \\[6pt]
+    -G_{kl} & k \neq l, \; (k,l) \in \mathcal{E}, \\
+    0 & \text{otherwise},
+  \end{cases}
+\end{equation}
+%
+and $\mathcal{E}$ is the union of real and phantom edges.
+
+Boundary conditions were incorporated via Schur-complement elimination.  Let
+$\mathcal{F}$ and $\mathcal{C}$ denote the sets of free and constrained nodes,
+respectively.  The block system
+%
+\begin{equation}
+  \begin{bmatrix} \mathbf{K}_{FF} & \mathbf{K}_{FC} \\
+                  \mathbf{K}_{CF} & \mathbf{K}_{CC} \end{bmatrix}
+  \begin{bmatrix} \mathbf{p}_F \\ \mathbf{p}_C \end{bmatrix}
+  = \mathbf{0}
+\end{equation}
+%
+was reduced to
+%
+\begin{equation}
+  \mathbf{K}_{FF}\,\mathbf{p}_F = -\mathbf{K}_{FC}\,\mathbf{p}_C,
+  \label{eq:schur}
+\end{equation}
+%
+which was solved with a direct sparse solver.  Any connected component of the
+combined graph that contained no boundary node was pinned to the mean pressure
+$p_\mathrm{mean} = (p_\mathrm{in} + p_\mathrm{out})/2$ to prevent a singular
+system.  Zero-diagonal rows arising from fully isolated nodes after partitioning
+were regularised by setting the diagonal to unity and the right-hand side to
+$p_\mathrm{mean}$.
+
+\subsection{Volumetric Flow}
+
+The volumetric flow through each real edge was computed from the pressure
+solution as
+%
+\begin{equation}
+  Q_{ij} = G_{ij}\,(p_i - p_j),
+\end{equation}
+%
+with results reported in $\mathrm{mm^3\,s^{-1}}$.  The full pressure, radius,
+flow, conductance, and edge-length fields were written back to the centerline
+mesh in VTK PolyData format (VTP) for visualisation in ParaView.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
