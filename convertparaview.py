@@ -126,7 +126,7 @@ def convert(nii_path, vti_path):
 
 
 # ---------------------------------------------------------------------------
-def mat_to_vtp(mat_path, vtp_path):
+def mat_to_vtp(mat_path, vtp_path, skel_path=None):
     """
     Load resistance_graph.mat (saved by resistanceLumping.m) and write a
     VTP polydata file of the 1-D resistance network for ParaView.
@@ -135,6 +135,11 @@ def mat_to_vtp(mat_path, vtp_path):
     --------
     Points = graph nodes (mm, world coordinates)
     Lines  = real edges  +  phantom gap-bridging edges
+
+    If skel_path is given the node world coordinates are recomputed from the
+    stored 0-indexed voxel indices (node_ijk0) via the NIfTI affine so that
+    every VTP node lands exactly on the corresponding skeleton voxel centre
+    when both files are loaded in ParaView.
 
     PointData
     ---------
@@ -162,6 +167,17 @@ def mat_to_vtp(mat_path, vtp_path):
     edges    = np.asarray(r.edges,       dtype=np.int64)     # E×2 (1-indexed)
     if edges.ndim == 1:                   # single-edge corner case after loadmat
         edges = edges.reshape(1, -1)
+
+    # Recompute node world coords from skeleton voxel indices + NIfTI affine
+    # so every VTP point lands exactly on the corresponding voxel centre.
+    if skel_path is not None:
+        log(f"Aligning nodes to skeleton: {skel_path}")
+        skel_nii = nib.load(skel_path)
+        affine   = skel_nii.affine.astype(np.float64)
+        ijk0 = np.asarray(r.node_ijk0, dtype=np.float64)   # N×3, 0-indexed
+        ones = np.ones((ijk0.shape[0], 1), dtype=np.float64)
+        nodes = (affine @ np.hstack([ijk0, ones]).T).T[:, :3]
+        log(f"  Recomputed {nodes.shape[0]} node positions from nibabel affine")
 
     pressure = col('pressure_mmhg')       # N
     radii    = col('radii_mm')            # E
@@ -276,6 +292,8 @@ if __name__ == '__main__':
     p_vtp = sub.add_parser('vtp', help='resistance_graph.mat → VTP centerline polydata')
     p_vtp.add_argument('mat_path', help='Input resistance_graph.mat')
     p_vtp.add_argument('vtp_path', nargs='?', help='Output .vtp (default: beside input)')
+    p_vtp.add_argument('--skel', metavar='SKEL_NII',
+                       help='Skeleton NIfTI used to pin node world coords to voxel centres')
 
     args = ap.parse_args()
 
@@ -290,5 +308,10 @@ if __name__ == '__main__':
         mat_path = os.path.abspath(args.mat_path)
         if not os.path.exists(mat_path):
             sys.exit(f"Error: {mat_path} not found")
+        skel_path = None
+        if args.skel:
+            skel_path = os.path.abspath(args.skel)
+            if not os.path.exists(skel_path):
+                sys.exit(f"Error: {skel_path} not found")
         vtp_path = args.vtp_path or _stem(mat_path, ('.mat',)) + '.vtp'
-        mat_to_vtp(mat_path, vtp_path)
+        mat_to_vtp(mat_path, vtp_path, skel_path=skel_path)

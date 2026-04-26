@@ -90,7 +90,7 @@ vp('   Skeleton voxels : %d  |  vessel voxels : %d', sum(skel(:)), sum(binary(:)
 %% ── 2. Extract skeleton graph ────────────────────────────────────────────
 vp('[2/6] Extracting skeleton graph...');
 
-[nodes, edges, radii, seg_vox] = extract_graph_from_skel(skel, dt_mm, vox, xv, yv, zv, sz);
+[nodes, edges, radii, seg_vox, node_ijk0] = extract_graph_from_skel(skel, dt_mm, vox, xv, yv, zv, sz);
 n_nodes = size(nodes, 1);
 n_edges = size(edges, 1);
 vp('   Nodes : %d  |  Edges : %d', n_nodes, n_edges);
@@ -278,6 +278,7 @@ vp('   pressure_mmhg.nii.gz');
 % ── Save MAT ─────────────────────────────────────────────────────────────
 results = struct( ...
     'nodes',             nodes,          ...
+    'node_ijk0',         node_ijk0,      ...
     'edges',             edges,          ...
     'radii_mm',          radii,          ...
     'lengths_mm',        lengths_mm,     ...
@@ -305,7 +306,7 @@ end
 %% =======================================================================
 
 % -------------------------------------------------------------------------
-function [nodes, edges, radii, seg_vox] = ...
+function [nodes, edges, radii, seg_vox, node_ijk0] = ...
         extract_graph_from_skel(skel, dt_mm, vox, xv, yv, zv, sz)
 % Extract node/edge graph from a binary skeleton with radius from dt_mm.
 % seg_vox{e} = linear voxel indices along the skeleton path for edge e.
@@ -334,7 +335,8 @@ if n_nodes == 0
 end
 
 [cx,cy,cz] = ind2sub(sz, crit_idx(:));
-nodes = [reshape(xv(cx(:)),[],1), reshape(yv(cy(:)),[],1), reshape(zv(cz(:)),[],1)];
+nodes     = [reshape(xv(cx(:)),[],1), reshape(yv(cy(:)),[],1), reshape(zv(cz(:)),[],1)];
+node_ijk0 = int32([cx(:)-1, cy(:)-1, cz(:)-1]);   % 0-indexed voxel coords for nibabel
 
 fprintf('   Critical voxels: %d endpoints, %d junctions\n', ...
     sum(ep_mask(:)), sum(jn_mask(:)));
