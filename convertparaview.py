@@ -168,17 +168,6 @@ def mat_to_vtp(mat_path, vtp_path, skel_path=None):
     if edges.ndim == 1:                   # single-edge corner case after loadmat
         edges = edges.reshape(1, -1)
 
-    # Recompute node world coords from skeleton voxel indices + NIfTI affine
-    # so every VTP point lands exactly on the corresponding voxel centre.
-    if skel_path is not None:
-        log(f"Aligning nodes to skeleton: {skel_path}")
-        skel_nii = nib.load(skel_path)
-        affine   = skel_nii.affine.astype(np.float64)
-        ijk0 = np.asarray(r.node_ijk0, dtype=np.float64)   # N×3, 0-indexed
-        ones = np.ones((ijk0.shape[0], 1), dtype=np.float64)
-        nodes = (affine @ np.hstack([ijk0, ones]).T).T[:, :3]
-        log(f"  Recomputed {nodes.shape[0]} node positions from nibabel affine")
-
     pressure = col('pressure_mmhg')       # N
     radii    = col('radii_mm')            # E
     lengths  = col('lengths_mm')          # E
@@ -213,31 +202,117 @@ def mat_to_vtp(mat_path, vtp_path, skel_path=None):
     # ── vtkPolyData ──────────────────────────────────────────────────────────
     pd = vtk.vtkPolyData()
 
-    # Points
-    pts = vtk.vtkPoints()
-    pts.SetDataTypeToDouble()
-    for i in range(n_nodes):
-        pts.InsertNextPoint(float(nodes[i, 0]), float(nodes[i, 1]), float(nodes[i, 2]))
-    pd.SetPoints(pts)
+    if skel_path is not None:
+        # ── Skeleton-constrained polyline mode ──────────────────────────────
+        # Every real edge becomes a vtkPolyLine whose vertices follow the
+        # skeleton voxel path stored in seg_vox_flat / seg_vox_ptr.
+        # Phantom edges are still 2-point lines connecting recomputed node
+        # positions.  Pressure is linearly interpolated along each path.
 
-    # Lines: real edges then phantom edges (both 1-indexed → 0-indexed)
-    lines = vtk.vtkCellArray()
-    for k in range(n_edges):
-        line = vtk.vtkLine()
-        line.GetPointIds().SetId(0, int(edges[k, 0]) - 1)
-        line.GetPointIds().SetId(1, int(edges[k, 1]) - 1)
-        lines.InsertNextCell(line)
-    for k in range(n_phantom):
-        line = vtk.vtkLine()
-        line.GetPointIds().SetId(0, int(ph_ni[k]) - 1)
-        line.GetPointIds().SetId(1, int(ph_nj[k]) - 1)
-        lines.InsertNextCell(line)
-    pd.SetLines(lines)
+        log(f"Aligning nodes/edges to skeleton: {skel_path}")
+        skel_nii = nib.load(skel_path)
+        affine   = skel_nii.affine.astype(np.float64)
 
-    # ── PointData: nodal pressure ────────────────────────────────────────────
-    pArr = numpy_to_vtk(pressure, deep=True, array_type=vtk.VTK_DOUBLE)
-    pArr.SetName('pressure_mmhg')
-    pd.GetPointData().SetScalars(pArr)
+        # Recompute node world coords from 0-indexed voxel subscripts
+        ijk0  = np.asarray(r.node_ijk0, dtype=np.float64)   # N×3
+        ones  = np.ones((ijk0.shape[0], 1))
+        nodes = (affine @ np.hstack([ijk0, ones]).T).T[:, :3]
+        log(f"  Recomputed {nodes.shape[0]} node positions via nibabel affine")
+
+        # CSR path data saved by resistanceLumping.m
+        seg_flat = np.asarray(r.seg_vox_flat, dtype=np.int64).flatten()  # 0-indexed linear
+        seg_ptr  = np.asarray(r.seg_vox_ptr,  dtype=np.int64).flatten()  # length n_edges+1
+        skel_sz  = np.asarray(r.skel_size,    dtype=np.int64).flatten()  # [nx,ny,nz]
+        nx, ny, nz = int(skel_sz[0]), int(skel_sz[1]), int(skel_sz[2])
+
+        def lin0_to_world(li):
+            """0-indexed column-major linear indices → world coords via affine."""
+            li  = np.asarray(li, dtype=np.int64)
+            i0  = (li % nx).astype(np.float64)
+            j0  = ((li // nx) % ny).astype(np.float64)
+            k0  = (li // (nx * ny)).astype(np.float64)
+            ijk = np.stack([i0, j0, k0], axis=1)
+            return (affine @ np.hstack([ijk, np.ones((len(li), 1))]).T).T[:, :3]
+
+        all_pts   = []   # list of M×3 arrays, one per cell
+        all_press = []   # pressure at each point (float or nan)
+
+        # Real edges → polylines along skeleton path
+        for e in range(n_edges):
+            li    = seg_flat[seg_ptr[e]:seg_ptr[e + 1]]
+            world = lin0_to_world(li)
+            all_pts.append(world)
+            m     = len(world)
+            ni_p  = pressure[int(edges[e, 0]) - 1]
+            nj_p  = pressure[int(edges[e, 1]) - 1]
+            t     = np.linspace(0.0, 1.0, m) if m > 1 else np.array([0.5])
+            all_press.append((1.0 - t) * ni_p + t * nj_p)
+
+        # Phantom edges → 2-point lines (no skeleton path available)
+        for k in range(n_phantom):
+            pts2 = np.vstack([nodes[int(ph_ni[k]) - 1], nodes[int(ph_nj[k]) - 1]])
+            all_pts.append(pts2)
+            all_press.append(np.array([np.nan, np.nan]))
+
+        flat_pts   = np.vstack(all_pts)   if all_pts   else np.zeros((0, 3))
+        flat_press = np.concatenate(all_press) if all_press else np.array([])
+
+        vtk_pts = vtk.vtkPoints()
+        vtk_pts.SetDataTypeToDouble()
+        for i in range(len(flat_pts)):
+            vtk_pts.InsertNextPoint(float(flat_pts[i, 0]),
+                                    float(flat_pts[i, 1]),
+                                    float(flat_pts[i, 2]))
+        pd.SetPoints(vtk_pts)
+
+        lines    = vtk.vtkCellArray()
+        offset   = 0
+        for chunk in all_pts:
+            m = len(chunk)
+            if m > 2:
+                poly = vtk.vtkPolyLine()
+                poly.GetPointIds().SetNumberOfIds(m)
+                for j in range(m):
+                    poly.GetPointIds().SetId(j, offset + j)
+                lines.InsertNextCell(poly)
+            else:
+                line = vtk.vtkLine()
+                line.GetPointIds().SetId(0, offset)
+                line.GetPointIds().SetId(1, offset + 1)
+                lines.InsertNextCell(line)
+            offset += m
+        pd.SetLines(lines)
+
+        pArr = numpy_to_vtk(flat_press, deep=True, array_type=vtk.VTK_DOUBLE)
+        pArr.SetName('pressure_mmhg')
+        pd.GetPointData().SetScalars(pArr)
+
+    else:
+        # ── Original mode: N node points, one vtkLine per edge ───────────────
+        vtk_pts = vtk.vtkPoints()
+        vtk_pts.SetDataTypeToDouble()
+        for i in range(n_nodes):
+            vtk_pts.InsertNextPoint(float(nodes[i, 0]),
+                                    float(nodes[i, 1]),
+                                    float(nodes[i, 2]))
+        pd.SetPoints(vtk_pts)
+
+        lines = vtk.vtkCellArray()
+        for k in range(n_edges):
+            line = vtk.vtkLine()
+            line.GetPointIds().SetId(0, int(edges[k, 0]) - 1)
+            line.GetPointIds().SetId(1, int(edges[k, 1]) - 1)
+            lines.InsertNextCell(line)
+        for k in range(n_phantom):
+            line = vtk.vtkLine()
+            line.GetPointIds().SetId(0, int(ph_ni[k]) - 1)
+            line.GetPointIds().SetId(1, int(ph_nj[k]) - 1)
+            lines.InsertNextCell(line)
+        pd.SetLines(lines)
+
+        pArr = numpy_to_vtk(pressure, deep=True, array_type=vtk.VTK_DOUBLE)
+        pArr.SetName('pressure_mmhg')
+        pd.GetPointData().SetScalars(pArr)
 
     # ── CellData: per-edge attributes ────────────────────────────────────────
     def cell_arr(real_data, phantom_data, name):
