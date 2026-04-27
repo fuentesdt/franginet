@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 from skimage.filters import frangi
-from skimage.morphology import skeletonize_3d
+from skimage.morphology import skeletonize as skeletonize_3d
 from scipy.ndimage import convolve
 from scipy.spatial.distance import cdist
 from sklearn.cluster import DBSCAN
@@ -679,13 +679,13 @@ if __name__ == "__main__":
 
     CONFIG = {
         # ---- Required inputs ------------------------------------------------
-        "preop_ct"           : "preop_ct.nii.gz",
-        "postop_ct"          : "postop_ct.nii.gz",
+        "preop_ct"           : "prepost/PreTxArtLoRes.raw.nii.gz",
+        "postop_ct"          : "prepost/PstTxPreLoRes.raw.nii.gz",
 
         # ---- Optional liver masks (from TotalSegmentator) -------------------
         #      Strongly recommended -- greatly reduces false positives
-        "preop_liver_mask"   : "preop_liver_mask.nii.gz",
-        "postop_liver_mask"  : "postop_liver_mask.nii.gz",
+        "preop_liver_mask"   : "prepost/PreTxArtLoRes.vessellabel.nii.gz",
+        "postop_liver_mask"  : "prepost/PstTxPreLoRes.vessellabel.nii.gz",
 
         # ---- ANTs transform (pre-op -> post-op) -----------------------------
         #      Set to None to use identity warp fallback
