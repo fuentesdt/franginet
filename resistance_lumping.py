@@ -74,6 +74,20 @@ def log(msg):
 
 # ── VTP I/O ──────────────────────────────────────────────────────────────────
 
+def read_fcsv_seed(fcsv_path):
+    """Read the first fiducial from a Slicer .fcsv file; return [x,y,z] RAS mm."""
+    with open(fcsv_path) as f:
+        for line in f:
+            if line.startswith('#'):
+                continue
+            parts = line.strip().split(',')
+            if len(parts) < 4:
+                continue
+            lps = [float(parts[1]), float(parts[2]), float(parts[3])]
+            return [-lps[0], -lps[1], lps[2]]   # LPS → RAS
+    return None
+
+
 def load_vtp(path):
     """
     Read a VTP file.  Returns
@@ -411,7 +425,7 @@ def phantom_edges_knn(nodes, edges, radii, comp_labels, n_comp,
 # ── Linear solve ──────────────────────────────────────────────────────────────
 
 def assemble_and_solve(N, nodes, edges, G_real, ph_edges, G_ph,
-                       radii, p_in_mmhg, p_out_mmhg):
+                       radii, p_in_mmhg, p_out_mmhg, extra_bc=None):
     """
     1. Assembles the symmetric sparse Laplacian K from real + phantom edges.
     2. Auto-detects inlet (leaf with largest radius in real graph) and outlets
@@ -456,9 +470,18 @@ def assemble_and_solve(N, nodes, edges, G_real, ph_edges, G_ph,
     inlet_node   = int(leaf_idx[np.argmax(radii[leaf_idx])])
     outlet_nodes = leaf_idx[leaf_idx != inlet_node]
 
-    bc_nodes = np.concatenate([[inlet_node], outlet_nodes]).astype(int)
-    bc_vals  = np.concatenate([[p_in_pa],
-                                np.full(len(outlet_nodes), p_out_pa)])
+    bc_nodes_list = [int(inlet_node)] + [int(n) for n in outlet_nodes]
+    bc_vals_list  = [p_in_pa] + [p_out_pa] * len(outlet_nodes)
+    if extra_bc:
+        existing = set(bc_nodes_list)
+        for ni, pi_mmhg in extra_bc.items():
+            ni = int(ni)
+            if ni not in existing:
+                bc_nodes_list.append(ni)
+                bc_vals_list.append(float(pi_mmhg) * 133.322)
+                existing.add(ni)
+    bc_nodes = np.array(bc_nodes_list, dtype=int)
+    bc_vals  = np.array(bc_vals_list)
 
     # Pin each floating component (no BC reachable in combined graph)
     adj_all = csr_matrix(
@@ -541,16 +564,18 @@ def solve(vtp_in, vtp_out, opts=None):
              else opts.get(name, None))
         return v if v is not None else default
 
-    label_path = _get('label_path',    None)
-    label_val  = _get('label_val',        2)
-    dt_path    = _get('dt_path',       None)
-    p_in       = _get('p_in_mmhg',    100.0)
-    p_out      = _get('p_out_mmhg',     5.0)
-    mu         = _get('mu_pas',       3.5e-3)
-    gap_max    = _get('gap_max_mm',    15.0)
-    alpha      = _get('alpha',         10.0)
-    gap_mode   = _get('gap_mode',     'mst')
-    def_radius = _get('default_radius', 1.0)
+    label_path  = _get('label_path',    None)
+    label_val   = _get('label_val',        2)
+    dt_path     = _get('dt_path',       None)
+    p_in        = _get('p_in_mmhg',    100.0)
+    p_out       = _get('p_out_mmhg',     5.0)
+    mu          = _get('mu_pas',       3.5e-3)
+    gap_max     = _get('gap_max_mm',    15.0)
+    alpha       = _get('alpha',         10.0)
+    gap_mode    = _get('gap_mode',     'mst')
+    def_radius  = _get('default_radius', 1.0)
+    seed_coord  = _get('seed_coord_mm', None)
+    p_seed      = float(_get('p_seed_mmhg', 882.0))
 
     # ── 1. Load VTP ──────────────────────────────────────────────────────────
     log(f"[1/5] Loading VTP : {vtp_in}")
@@ -559,6 +584,15 @@ def solve(vtp_in, vtp_out, opts=None):
     log(f"  Nodes: {N}  Edges: {E}")
     if E == 0:
         sys.exit("Error: VTP has no edges — run skelcenterline.py first")
+
+    # Optional seed Dirichlet BC (e.g. label==5 injection site)
+    extra_bc = None
+    if seed_coord is not None:
+        seed_pt  = np.array(seed_coord, dtype=np.float64)
+        seed_idx = int(np.argmin(np.linalg.norm(nodes - seed_pt, axis=1)))
+        extra_bc = {seed_idx: p_seed}
+        log(f"  Seed node {seed_idx} at {nodes[seed_idx].round(2).tolist()} "
+            f"pinned to {p_seed:.0f} mmHg")
 
     # ── 2. Radii ─────────────────────────────────────────────────────────────
     if label_path is not None:
@@ -602,7 +636,7 @@ def solve(vtp_in, vtp_out, opts=None):
         f"mu={mu:.2e} Pa·s")
     pressure_mmhg, pressure_pa, flows_mm3s, inlet, outlets = \
         assemble_and_solve(N, nodes, edges, G_real, ph_edges, G_ph,
-                           radii, p_in, p_out)
+                           radii, p_in, p_out, extra_bc=extra_bc)
     log(f"  Inlet node  : {inlet}")
     log(f"  Outlet nodes: {len(outlets)}")
 
