@@ -286,7 +286,10 @@ label = rasterise_tree(mhv_tree, label, xv, yv, zv, sz, 3, opt.r_vessel_min,    
 label = rasterise_tree(lhv_tree, label, xv, yv, zv, sz, 3, opt.r_vessel_min,       liver_mask);
 
 %% ---- Tumor (label 4) ----
-label = add_tumor(label, liver_mask, xv, yv, zv, sz, vx, opt);
+[label, tumor_ctr] = add_tumor(label, liver_mask, xv, yv, zv, sz, vx, opt);
+
+%% ---- Inflow skeleton + upstream seed (label 5) ----
+[skel_vol, seed_vox] = skeletonise_inflow(label, xv, yv, zv, sz, vx, root_ha, tumor_ctr, opt);
 
 for lab = 1:4
     names = {'liver','inflow vessels','outflow vessels','tumor'};
@@ -296,10 +299,16 @@ for lab = 1:4
 end
 
 %% ---- Write output NIfTI (same geometry as input) ----
-out_base = fullfile(opt.outDir, sprintf('%s_vessel_phantom.nii', sample_id));
 info_out = make_output_nifti_info(info_in, sz);
+out_base = fullfile(opt.outDir, sprintf('%s_vessel_phantom.nii', sample_id));
 niftiwrite(label, out_base, info_out, 'Compressed', true);
 vprint(opt, '   Written : %s.gz', out_base);
+skel_out = fullfile(opt.outDir, sprintf('%s_skel_seed.nii', sample_id));
+niftiwrite(skel_vol, skel_out, info_out, 'Compressed', true);
+vprint(opt, '   Skel buffer: %s.gz', skel_out);
+fcsv_out   = fullfile(opt.outDir, sprintf('%s_seed.fcsv', sample_id));
+seed_world = vox_to_world_ras(seed_vox, info_out);
+write_seed_fcsv(seed_world, fcsv_out, sample_id, opt);
 end
 
 
@@ -459,7 +468,10 @@ vprint(opt, '   Outflow segments: %d RHV + %d MHV + %d LHV', ...
 
 %% [5/6] Tumor
 vprint(opt, '[5/6] Placing tumor...');
-label = add_tumor(label, liver_mask, xv, yv, zv, sz, vx, opt);
+[label, tumor_ctr] = add_tumor(label, liver_mask, xv, yv, zv, sz, vx, opt);
+
+%% [5b/6] Inflow skeleton + upstream seed (label 5)
+[skel_vol, seed_vox] = skeletonise_inflow(label, xv, yv, zv, sz, vx, root_ha, tumor_ctr, opt);
 
 %% [6/6] Write NIfTI
 vprint(opt, '[6/6] Writing NIfTI: %s', opt.output);
@@ -470,6 +482,12 @@ if endsWith(outfile, '.gz')
 else
     niftiwrite(label, outfile, info, 'Compressed', false);
 end
+stem     = outfile(1:end-7);   % strip .nii.gz
+skel_base = [stem '_skel_seed.nii'];
+niftiwrite(skel_vol, skel_base, info, 'Compressed', true);
+vprint(opt, '   Skel buffer: %s.gz', skel_base);
+seed_world = vox_to_world_ras(seed_vox, info);
+write_seed_fcsv(seed_world, [stem '_seed.fcsv'], 'seed', opt);
 
 for lab = 1:4
     names = {'liver','inflow vessels','outflow vessels','tumor'};
@@ -485,7 +503,7 @@ end
 %  SHARED HELPER FUNCTIONS
 %% ==========================================================================
 
-function label = add_tumor(label, liver_mask, xv, yv, zv, sz, vx, opt)
+function [label, tumor_ctr] = add_tumor(label, liver_mask, xv, yv, zv, sz, vx, opt)
 %ADD_TUMOR  Place one randomly shaped malignant-looking tumor (label 4).
 %
 % Shape model  r(θ,φ) = r0 · [1 + SH_deform(θ,φ) + spicule_bumps(θ,φ)]
@@ -650,6 +668,86 @@ sub_lbl(tumor_sub & sub_liver & ~sub_vessel) = 4;
 sub_lbl(tumor_sub & ~sub_liver) = 0;
 
 label(xi1:xi2, yi1:yi2, zi1:zi2) = sub_lbl;
+tumor_ctr = [cx, cy, cz];   % mm world coordinates, returned to caller
+end
+
+
+function [skel_vol, seed_vox] = skeletonise_inflow(label, xv, yv, zv, sz, vx, root_ha_mm, tumor_ctr, opt)
+%SKELETONISE_INFLOW  Skeleton buffer for inflow vessels with upstream seed.
+%
+% Returns skel_vol (uint8, same size as label):
+%   0 — background
+%   1 — inflow skeleton voxel  (bwskel of label==2)
+%   5 — upstream seed (1×1×1 voxel, randomly chosen between the hepatic-
+%        artery root and the tumour-nearest skeleton voxel)
+%
+% "Upstream" is defined by Euclidean distance to root_ha_mm: candidates
+% must be closer to the HA root than the tumour-nearest skeleton voxel,
+% ensuring the seed lies on the feeding-artery side of the tumour.
+
+%% Skeletonise inflow (label 2)
+inflow_mask = label == 2;
+skel_vol = zeros(sz, 'uint8');
+seed_vox = [];   % returned empty if placement fails
+
+if ~any(inflow_mask(:))
+    warning('liver_phantom: no inflow voxels (label 2) — skeleton is empty');
+    return;
+end
+
+skel = bwskel(inflow_mask);
+skel_vol(skel) = 1;
+
+%% Skeleton voxel coordinates in mm
+[si, sj, sk_] = ind2sub(sz, find(skel));
+if isempty(si)
+    warning('liver_phantom: bwskel returned empty skeleton');
+    return;
+end
+skel_mm = [xv(si)', yv(sj)', zv(sk_)'];   % [N × 3]
+
+%% Tumour centroid in mm
+if ~isempty(tumor_ctr) && numel(tumor_ctr) == 3
+    tc_mm = tumor_ctr(:)';
+else
+    [ti, tj, tk_t] = ind2sub(sz, find(label == 4));
+    if isempty(ti)
+        vprint(opt, '   Seed: no tumour found — skipping seed placement');
+        return;
+    end
+    tc_mm = [mean(xv(ti)), mean(yv(tj)), mean(zv(tk_t))];
+end
+
+%% T_skel: skeleton voxel nearest to tumour centroid
+d_tumor  = sqrt(sum((skel_mm - tc_mm).^2, 2));
+[~, T_idx] = min(d_tumor);
+
+%% Upstream candidates: skeleton voxels closer to HA root than T_skel
+d_root   = sqrt(sum((skel_mm - root_ha_mm).^2, 2));
+d_T_root = d_root(T_idx);
+
+% Must not be at the very root entry (leave at least 30 % margin)
+d_min    = max(5, 0.30 * d_T_root);
+upstream = (d_root < d_T_root) & (d_root > d_min);
+
+if any(upstream)
+    cands   = find(upstream);
+    pick    = cands(randi(numel(cands)));
+else
+    % Fallback: place seed at T_skel itself
+    pick = T_idx;
+    vprint(opt, '   Seed: no upstream candidates — seed at tumour-nearest voxel');
+end
+
+%% Place 1×1×1 seed (label 5)
+seed_vi = si(pick);
+seed_vj = sj(pick);
+seed_vk = sk_(pick);
+skel_vol(seed_vi, seed_vj, seed_vk) = 5;
+seed_vox = [seed_vi, seed_vj, seed_vk];   % 1-indexed MATLAB voxel, returned to caller
+
+vprint(opt, '   Seed (label 5): vox=[%d %d %d]  d_root=%.0f mm  d_tumour=%.0f mm', ...
+    seed_vi, seed_vj, seed_vk, d_root(pick), d_tumor(pick));
 end
 
 
@@ -867,6 +965,79 @@ info.raw.dim           = [3 sz(1) sz(2) sz(3) 1 1 1 1];
 info.raw.datatype      = 2;
 info.raw.bitpix        = 8;
 info.raw.xyzt_units    = 2;
+end
+
+
+function world_ras = vox_to_world_ras(vox_1idx, nii_info)
+%VOX_TO_WORLD_RAS  NIfTI sform/qform → world RAS, 1-indexed voxel input.
+if isempty(vox_1idx), world_ras = []; return; end
+v0 = double(vox_1idx(:)) - 1;    % 1-indexed → 0-indexed
+
+% sform takes priority (sform_code > 0)
+if isfield(nii_info,'raw') && isfield(nii_info.raw,'sform_code') && ...
+        nii_info.raw.sform_code > 0
+    T = [nii_info.raw.srow_x(:)'; nii_info.raw.srow_y(:)'; nii_info.raw.srow_z(:)'];
+    world_ras = (T * [v0; 1])';
+    return;
+end
+
+% Fall back to qform (qform_code > 0)
+if isfield(nii_info,'raw') && isfield(nii_info.raw,'qform_code') && ...
+        nii_info.raw.qform_code > 0
+    b = double(nii_info.raw.quatern_b);
+    c = double(nii_info.raw.quatern_c);
+    d = double(nii_info.raw.quatern_d);
+    a = sqrt(max(0, 1 - b^2 - c^2 - d^2));
+    R = [a^2+b^2-c^2-d^2,  2*(b*c-a*d),    2*(b*d+a*c); ...
+         2*(b*c+a*d),       a^2-b^2+c^2-d^2, 2*(c*d-a*b); ...
+         2*(b*d-a*c),       2*(c*d+a*b),    a^2-b^2-c^2+d^2];
+    pd   = double(nii_info.PixelDimensions(1:3));
+    qfac = sign(double(nii_info.raw.pixdim(1)));
+    if qfac == 0, qfac = 1; end
+    RS   = R * diag([pd(1), pd(2), pd(3)*qfac]);
+    offs = [double(nii_info.raw.qoffset_x); ...
+            double(nii_info.raw.qoffset_y); ...
+            double(nii_info.raw.qoffset_z)];
+    world_ras = (RS * v0 + offs)';
+    return;
+end
+
+% Last resort: PixelDimensions only (no rotation, origin at 0)
+pd = double(nii_info.PixelDimensions(1:3));
+world_ras = (pd(:) .* v0)';
+end
+
+
+function write_seed_fcsv(seed_mm, fcsv_path, label_str, opt)
+%WRITE_SEED_FCSV  Write a single-point Slicer Markups Fiducial (.fcsv) file.
+%
+% Coordinate convention: .fcsv uses LPS.  seed_mm is in RAS (as used
+% throughout liver_phantom), so x and y are negated on output.
+%
+% File format matches gap_markers.fcsv (Markups fiducial version 4.11).
+
+if isempty(seed_mm)
+    vprint(opt, '   FCSV: no seed position — skipping %s', fcsv_path);
+    return;
+end
+
+% RAS → LPS
+lps = [-seed_mm(1), -seed_mm(2), seed_mm(3)];
+
+fid = fopen(fcsv_path, 'w');
+if fid < 0
+    warning('liver_phantom: cannot open %s for writing', fcsv_path);
+    return;
+end
+
+fprintf(fid, '# Markups fiducial file version = 4.11\n');
+fprintf(fid, '# CoordinateSystem = LPS\n');
+fprintf(fid, '# columns = id,x,y,z,ow,ox,oy,oz,vis,sel,lock,label,desc,associatedNodeID\n');
+fprintf(fid, 'vtkMRMLMarkupsFiducialNode_0,%.4f,%.4f,%.4f,0,0,0,1,1,1,0,%s,,\n', ...
+    lps(1), lps(2), lps(3), label_str);
+
+fclose(fid);
+vprint(opt, '   Seed FCSV : %s', fcsv_path);
 end
 
 
