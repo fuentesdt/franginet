@@ -51,9 +51,26 @@
 %   verbose       print progress                                   default true
 %
 % -------------------------------------------------------------------------
-% OUTPUT (real-data mode):
-%   <outDir>/<id>_vessel_phantom.nii.gz   for each CSV row
-%     uint8 label volume in the same voxel space as the input NIfTI
+% OUTPUT (real-data mode) — three files written per CSV row:
+%
+%   <outDir>/<id>_vessel_phantom.nii.gz
+%     uint8 label volume in the same voxel grid as the input NIfTI.
+%       0  background
+%       1  liver parenchyma
+%       2  inflow vessels  (portal vein + hepatic artery)
+%       3  outflow vessels (right / middle / left hepatic veins → IVC)
+%       4  tumor           (spiculated, spherical-harmonic shape)
+%
+%   <outDir>/<id>_skel_seed.nii.gz
+%     uint8 skeleton buffer, same voxel grid.
+%       0  background
+%       1  1-voxel-wide inflow skeleton (bwskel of label 2)
+%       5  single seed voxel on the hepatic-artery branch nearest the tumor
+%
+%   <outDir>/<id>_seed.fcsv
+%     3D Slicer Markups fiducial file (LPS world coordinates).
+%     Contains the label-5 seed point; use as catheter entry for
+%     interventional planning (e.g. thermal embolisation).
 %
 % -------------------------------------------------------------------------
 % DEPENDENCIES:
